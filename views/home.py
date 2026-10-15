@@ -2,7 +2,7 @@
 import pandas as pd
 import streamlit as st
 
-from app_core import runner, store, theme
+from app_core import jobs_ui, runner, store, theme
 
 consignees, marks = store.consignees(), store.marks()
 run = st.session_state.get("run")
@@ -29,6 +29,10 @@ else:
     with c4:
         theme.kpi("Data check", "OK" if not dupes else f"{dupes} to fix", "duplicate customer numbers" if dupes else "no duplicates",
                   "green" if not dupes else "amber")
+
+# ------------------------------------------------------------------ builds in progress and failed builds (kept when the user changes page)
+jobs_ui.show_failures("home")
+jobs_ui.live_panel()
 
 # ------------------------------------------------------------------ workflow
 st.markdown("#### How it works")
@@ -67,3 +71,10 @@ else:
 if dupes:
     st.warning(f"{dupes} customer number(s) are saved twice, written differently (for example 000035 and 35). Only one can match an invoice.")
     st.page_link("views/data.py", label="Open Backup and data", icon="💾")
+
+# ------------------------------------------------------------------ build history of this session
+rows = jobs_ui.history_rows()
+if rows:
+    st.markdown("#### Recent builds")
+    st.dataframe(pd.DataFrame(rows), hide_index=True)
+    st.caption("Builds run in the background: you can open any page while one is running. The list is kept in this browser session only.")

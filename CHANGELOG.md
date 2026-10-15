@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.0.0
+- **Builds run in the background.** Streamlit stops a page's script when the user opens another page, so a build that ran inside *Build invoices*
+  died silently on any click elsewhere. The build (and "Update invoices") now runs in a worker thread (`app_core/jobs.py`); the pages only start it,
+  watch it and collect the result. Changing page, re-runs and closing the tab no longer stop it.
+- **Failures are reported.** A failed build (with every problem of a bad master and its row) or a cancelled one stays on the **Dashboard** and the Build
+  page until dismissed, a pop-up appears on whatever page you are on, a link shows in the sidebar, and each start / end / failure is a line in the audit log.
+- Live progress (bar, elapsed, time left, **Cancel**) on the Build page, the Dashboard and the sidebar; new **Recent builds** table on the Dashboard.
+- One build at a time per session, at most 2 on the server (others wait), sessions cannot see each other's jobs, sign-out / expiry cancels the session's
+  builds, finished jobs are dropped after 2 hours (last 10 per session kept).
+- Limits: a server restart ends running builds (jobs are in memory). Invoice rules, stored data, look and security layers are unchanged from 3.0.
+- Tests: `tests/test_jobs.py` (success, failure, bad master, cancel, queueing, isolation, clean-up, real builds in a thread).
+
 ## 3.0.0
 - New typography. **Inter** for text, tables and forms, **Plus Jakarta Sans** for page titles, headings and big numbers, **JetBrains Mono** for code.
   Numbers use tabular figures so columns of amounts line up. Tighter heading spacing, clearer small captions and sidebar section labels.

@@ -63,6 +63,7 @@ class FakeStreamlit(types.ModuleType):
     def rerun(self): raise RuntimeError("st.rerun called in smoke run")
     def switch_page(self, p): raise RuntimeError("st.switch_page called")
     def cache_resource(self, f=None, **k): return f if f else (lambda g: g)
+    def fragment(self, f=None, **k): return f if f else (lambda g: g)     # run the block once, like the first run of a real fragment
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
@@ -73,7 +74,7 @@ def run_page(name, state=None):
     fake = FakeStreamlit()
     fake.session_state.update(state or {})
     sys.modules["streamlit"] = fake
-    for m in [m for m in sys.modules if m.startswith("app_core.ui")]:
+    for m in [m for m in sys.modules if m.startswith(("app_core.ui", "app_core.jobs_ui"))]:
         del sys.modules[m]
     runpy.run_path(str(ROOT / "views" / name), run_name="__page__")
     return fake
@@ -88,6 +89,25 @@ if __name__ == "__main__":
     for p in pages:
         f = run_page(p)
         print(f"idle  {p:15s} ok  (frames={len(f.frames)})")
+    # version 4: pages while a build is running, after a failure and after a bad master (synthetic, no customer data)
+    import threading
+    import time
+
+    from app_core import jobs
+
+    mgr, gate = jobs.manager(), threading.Event()
+    def bad(progress):
+        raise runner.InvalidMaster([f"Row {i}: QTY is missing" for i in range(5)])
+    mgr.submit("o1", "build", "Building the invoices", "bad.xlsx", bad)
+    while mgr.active("o1"):
+        time.sleep(0.02)
+    mgr.submit("o2", "build", "Building the invoices", "slow.xlsx", lambda p: (p(0.4, "Invoice 3 of 7"), gate.wait(5))[1])
+    time.sleep(0.2)
+    for owner, what in [("o1", "failed"), ("o2", "running")]:
+        for p in ["home.py", "build.py"]:
+            f = run_page(p, {"_job_owner": owner})
+            print(f"jobs  {p:15s} ok  ({what})")
+    gate.set()
     if plan:
         m = runner.build_master(Path(plan).read_bytes(), Path(plan).name)
         run = runner.build_invoices(m["master"], "MASTER_INVOICE.xlsx")

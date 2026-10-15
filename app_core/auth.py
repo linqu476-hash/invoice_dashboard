@@ -15,7 +15,7 @@ import time
 
 import streamlit as st
 
-from . import authlib, security, theme
+from . import authlib, jobs, security, theme
 
 
 def _setting(name, default=None):
@@ -48,6 +48,11 @@ def _expired():
     return None
 
 
+def _drop_jobs():
+    """Sign-out / expiry drops the session's data, so its background builds are stopped and forgotten too."""
+    jobs.manager().discard_owner(st.session_state.get("_job_owner"))
+
+
 def require_login():
     """Stop the script with a sign-in form until the password is right."""
     expected = _expected()
@@ -60,6 +65,7 @@ def require_login():
         if reason is None:
             st.session_state["auth_last"] = time.time()
             return
+        _drop_jobs()
         security.audit("session_expired", reason=reason)
         st.session_state.clear()           # drops the uploaded files and built invoices held in this session
         st.session_state["auth_notice"] = "You were signed out because the session was idle too long." if reason == "idle" \
@@ -99,6 +105,7 @@ def _login_form(expected):
 
 def sign_out_button():
     if st.sidebar.button("Sign out"):
+        _drop_jobs()
         security.audit("logout")
         st.session_state.clear()           # also drops the uploaded files and built invoices held in this session
         st.rerun()

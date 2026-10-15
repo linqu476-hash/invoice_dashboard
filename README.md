@@ -1,9 +1,9 @@
-# Invoice dashboard (Streamlit) · version 3
+# Invoice dashboard (Streamlit) · version 4
 
 Packing plan → `MASTER_INVOICE.xlsx` → commercial invoices + packing lists, with the same rules as the Django version.
 The invoice logic is the **unchanged `invoicing/` package**; this project replaces the Django layer (views, templates, models, auth) with Streamlit pages.
 
-**Version 3** upgrades the lettering (Inter, Plus Jakarta Sans, JetBrains Mono, self-hosted in `static/fonts`); **version 2** brought the dashboard look (see `CHANGELOG.md`). To change a font, replace the file in `static/fonts` and edit the `[[theme.fontFaces]]` block and the `font` / `headingFont` / `codeFont` lines in `.streamlit/config.toml`. The look lives in two places only: the `[theme]` part of `.streamlit/config.toml`
+**Version 4** runs builds in the background (see below): changing page no longer stops a build, and every failure is shown on the Dashboard. **Version 3** upgrades the lettering (Inter, Plus Jakarta Sans, JetBrains Mono, self-hosted in `static/fonts`); **version 2** brought the dashboard look (see `CHANGELOG.md`). To change a font, replace the file in `static/fonts` and edit the `[[theme.fontFaces]]` block and the `font` / `headingFont` / `codeFont` lines in `.streamlit/config.toml`. The look lives in two places only: the `[theme]` part of `.streamlit/config.toml`
 (colours) and `app_core/theme.py` (cards and layout). To change the brand colour, edit `primaryColor` there and `BLUE` in `theme.py`.
 
 ## Run it locally
@@ -79,6 +79,7 @@ Consignees and shipping marks are stored in SQLite at `data/invoice_dashboard.sq
 
 - **Build time.** A packing plan of about 340 PO lines becomes 26 invoices in roughly 35 seconds on a normal laptop; shared hosting can be slower. Profiling shows most of it is openpyxl's `merge_cells` called from `engine.cut_rows` and `engine.apply`, so it is an engine cost, not a Streamlit one, and it is the first place to optimise.
 - **Old masters.** A master without the `INV DATE` column (for example the old `sample_data/MASTER_INVOICE.xlsx`) is refused, exactly as in the Django app; rebuild it on *Packing plan to master*.
+- **Background builds (v4).** *Build invoices* starts a job in a worker thread of the server (`app_core/jobs.py`) instead of running inside the page, because Streamlit stops a page script when the user opens another page. The progress bar shows on the Build page, the Dashboard and in the sidebar; the result, or the reason of a failure (for a bad master, every problem with its row), is reported on the Dashboard and with a pop-up on whatever page you are on. One build at a time per session, at most 2 at once on the server (the others wait), and a build can be cancelled. Limits: jobs live in server memory, so a restart or redeploy ends a running build; a build belongs to the browser session, so signing out cancels it and a new session cannot see it; finished jobs are forgotten after 2 hours and each session keeps its last 10.
 - **Memory.** Uploaded files and built invoices are kept in the session (not on disk) until you sign out or close the tab.
 - **Upload limit.** 50 MB in `.streamlit/config.toml`; one workbook is capped at 20 MB by the validation rules.
 
@@ -97,6 +98,7 @@ The smoke test checks that the pages handle real built data; it cannot check Str
     views/home.py        dashboard (home page)
     views/               build.py  master.py  consignees.py  marks.py  data.py
     app_core/            store.py (SQLite)  runner.py (build + checks)  uploads.py  auth.py  ui.py
+                         jobs.py (background job engine)  jobs_ui.py (progress, failures, sidebar status)
     invoicing/           the invoice logic, unchanged from the Django project
     assets/              invoice_template.xlsx
     scripts/             import_from_django.py
