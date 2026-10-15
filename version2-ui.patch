@@ -1,0 +1,551 @@
+From 2ce89da729da37ab3471ae4a26479576b53ee166 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 15 Oct 2026 11:32:30 +0000
+Subject: [PATCH] Version 2: dashboard home page, professional navy/blue theme,
+ card layout, grouped navigation, branded sign-in
+
+No change to invoice rules, stored data or the security layers.
+---
+ .streamlit/config.toml |  14 ++++-
+ CHANGELOG.md           |  12 ++++
+ README.md              |   9 ++-
+ app_core/__init__.py   |   1 +
+ app_core/auth.py       |  16 ++++--
+ app_core/theme.py      | 124 +++++++++++++++++++++++++++++++++++++++++
+ streamlit_app.py       |  25 +++++----
+ tests/smoke_pages.py   |   4 +-
+ tests/test_theme.py    |  31 +++++++++++
+ views/build.py         |   4 +-
+ views/consignees.py    |   4 +-
+ views/data.py          |   4 +-
+ views/home.py          |  69 +++++++++++++++++++++++
+ views/marks.py         |   4 +-
+ views/master.py        |   4 +-
+ 15 files changed, 294 insertions(+), 31 deletions(-)
+ create mode 100644 CHANGELOG.md
+ create mode 100644 app_core/theme.py
+ create mode 100644 tests/test_theme.py
+ create mode 100644 views/home.py
+
+diff --git a/.streamlit/config.toml b/.streamlit/config.toml
+index c296ad9..e82a2f1 100644
+--- a/.streamlit/config.toml
++++ b/.streamlit/config.toml
+@@ -11,5 +11,17 @@ toolbarMode = "viewer"      # hides the developer menu
+ [browser]
+ gatherUsageStats = false
+ 
++# Version 2 palette: navy + blue on a light grey-blue canvas, white cards (see app_core/theme.py for the card styles)
+ [theme]
+-primaryColor = "#2748D8"
++primaryColor = "#2563EB"
++backgroundColor = "#F4F6FA"
++secondaryBackgroundColor = "#FFFFFF"
++textColor = "#0F172A"
++font = "sans serif"
++baseRadius = "large"
++
++[theme.sidebar]
++backgroundColor = "#0B1F3A"
++secondaryBackgroundColor = "#12305A"
++textColor = "#E6EDF7"
++primaryColor = "#38BDF8"
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+new file mode 100644
+index 0000000..531811b
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -0,0 +1,12 @@
++# Changelog
++
++## 2.0.0
++- New look: navy and blue palette on a light canvas, white cards with soft shadows, rounded buttons, tabs, uploaders and tables
++  (`.streamlit/config.toml` for the theme, `app_core/theme.py` for the card styles).
++- New **Dashboard** home page: key numbers, the 4-step workflow with shortcuts, and the last build with an amount-by-country chart.
++- Grouped sidebar navigation: Overview, Invoicing, Master data, System. Version number shown in the sidebar.
++- Centred, branded sign-in page. Page headers with icon badges. Metrics shown as cards.
++- No change to the invoice rules, the stored data or the security layers of 1.x.
++
++## 1.1.0
++- Three security layers: hardened sign-in, upload validation, data and deployment protection (see the Security section of the README).
+diff --git a/README.md b/README.md
+index 2990f5c..ea500f7 100644
+--- a/README.md
++++ b/README.md
+@@ -1,8 +1,11 @@
+-# Invoice dashboard (Streamlit)
++# Invoice dashboard (Streamlit) · version 2
+ 
+ Packing plan → `MASTER_INVOICE.xlsx` → commercial invoices + packing lists, with the same rules as the Django version.
+ The invoice logic is the **unchanged `invoicing/` package**; this project replaces the Django layer (views, templates, models, auth) with Streamlit pages.
+ 
++**Version 2** brings a new dashboard look (see `CHANGELOG.md`). The look lives in two places only: the `[theme]` part of `.streamlit/config.toml`
++(colours) and `app_core/theme.py` (cards and layout). To change the brand colour, edit `primaryColor` there and `BLUE` in `theme.py`.
++
+ ## Run it locally
+ 
+ ```bash
+@@ -89,7 +92,9 @@ The smoke test checks that the pages handle real built data; it cannot check Str
+ 
+ ## Layout
+ 
+-    streamlit_app.py     entry point: password gate, navigation
++    streamlit_app.py     entry point: theme, password gate, grouped navigation
++    app_core/theme.py    version 2 colours, CSS and card helpers
++    views/home.py        dashboard (home page)
+     views/               build.py  master.py  consignees.py  marks.py  data.py
+     app_core/            store.py (SQLite)  runner.py (build + checks)  uploads.py  auth.py  ui.py
+     invoicing/           the invoice logic, unchanged from the Django project
+diff --git a/app_core/__init__.py b/app_core/__init__.py
+index e69de29..8c0d5d5 100644
+--- a/app_core/__init__.py
++++ b/app_core/__init__.py
+@@ -0,0 +1 @@
++__version__ = "2.0.0"
+diff --git a/app_core/auth.py b/app_core/auth.py
+index eacaec4..12767a3 100644
+--- a/app_core/auth.py
++++ b/app_core/auth.py
+@@ -15,7 +15,7 @@ import time
+ 
+ import streamlit as st
+ 
+-from . import authlib, security
++from . import authlib, security, theme
+ 
+ 
+ def _setting(name, default=None):
+@@ -64,16 +64,23 @@ def require_login():
+         st.session_state.clear()           # drops the uploaded files and built invoices held in this session
+         st.session_state["auth_notice"] = "You were signed out because the session was idle too long." if reason == "idle" \
+             else "You were signed out because the session reached its maximum length."
+-    st.title("🧾 Invoice dashboard")
++    theme.login_header()
++    _, mid, _ = st.columns([1, 1.3, 1])          # a centred sign-in card
++    with mid:
++        _login_form(expected)
++    st.stop()
++
++
++def _login_form(expected):
+     if st.session_state.get("auth_notice"):
+         st.info(st.session_state.pop("auth_notice"))
+     left = authlib.seconds_locked()
+     if left:
+         st.error(f"Too many wrong passwords. Sign-in is locked for {left} more seconds, then try again.")
+-        st.stop()
++        return
+     with st.form("login"):
+         pw = st.text_input("Password", type="password")
+-        submitted = st.form_submit_button("Sign in")
++        submitted = st.form_submit_button("Sign in", use_container_width=True)
+     if submitted:
+         if authlib.seconds_locked():
+             st.rerun()
+@@ -88,7 +95,6 @@ def require_login():
+             st.error(f"Too many wrong passwords. Sign-in is locked for {lock} seconds.")
+         else:
+             st.error("Wrong password.")
+-    st.stop()
+ 
+ 
+ def sign_out_button():
+diff --git a/app_core/theme.py b/app_core/theme.py
+new file mode 100644
+index 0000000..91fea47
+--- /dev/null
++++ b/app_core/theme.py
+@@ -0,0 +1,124 @@
++"""Version 2 look: colours, CSS and small HTML building blocks. Static markup only.
++
++Every piece of text that comes from data goes through html.escape, so nothing a user typed (customer names, file names)
++can inject markup into the page. The CSS is a fixed string.
++"""
++import html
++
++import streamlit as st
++
++from . import __version__
++
++NAVY, BLUE, SKY, TEAL = "#0B1F3A", "#2563EB", "#38BDF8", "#0EA5A4"
++AMBER, GREEN, RED, INK, MUTED, LINE = "#F59E0B", "#16A34A", "#DC2626", "#0F172A", "#5B6B82", "#E3E8F0"
++TONES = {"blue": BLUE, "teal": TEAL, "amber": AMBER, "green": GREEN, "red": RED, "navy": NAVY}
++
++CSS = f"""
++<style>
++.block-container {{ padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1280px; }}
++h1 {{ font-weight: 800; letter-spacing: -0.02em; color: {NAVY}; }}
++h4 {{ color: {NAVY}; font-weight: 700; border-left: 4px solid {BLUE}; padding-left: .6rem; margin-top: 1.6rem; }}
++[data-testid="stMetric"] {{ background: #fff; border: 1px solid {LINE}; border-radius: 14px; padding: 14px 18px;
++    box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 6px 16px rgba(15,23,42,.05); }}
++[data-testid="stMetricLabel"] p {{ color: {MUTED}; font-weight: 700; font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; }}
++[data-testid="stMetricValue"] {{ color: {NAVY}; font-weight: 800; }}
++.stButton > button, .stDownloadButton > button, [data-testid="stFormSubmitButton"] > button {{
++    border-radius: 10px; font-weight: 600; border: 1px solid {LINE}; transition: transform .08s ease, box-shadow .15s ease; }}
++.stButton > button:hover, .stDownloadButton > button:hover {{ transform: translateY(-1px); box-shadow: 0 6px 14px rgba(37,99,235,.18); }}
++.stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"], [data-testid="stFormSubmitButton"] > button {{
++    background: linear-gradient(135deg, {BLUE}, #1D4ED8); border: 0; color: #fff; }}
++.stTabs [data-baseweb="tab-list"] {{ gap: 6px; border-bottom: 1px solid {LINE}; }}
++.stTabs [data-baseweb="tab"] {{ padding: 8px 18px; font-weight: 600; border-radius: 10px 10px 0 0; }}
++[data-testid="stFileUploaderDropzone"] {{ border: 2px dashed #9DB4DD; border-radius: 14px; background: #F8FAFF; }}
++[data-testid="stExpander"] {{ border: 1px solid {LINE}; border-radius: 12px; background: #fff; }}
++[data-testid="stForm"] {{ border: 1px solid {LINE}; border-radius: 16px; background: #fff; padding: 1.2rem;
++    box-shadow: 0 10px 30px rgba(15,23,42,.08); }}
++[data-testid="stDataFrame"] {{ border: 1px solid {LINE}; border-radius: 12px; overflow: hidden; }}
++[data-testid="stAlert"] {{ border-radius: 12px; }}
++[data-testid="stSidebar"] [data-testid="stSidebarNav"]::before {{ content: "🧾  Invoice dashboard"; display: block; color: #fff;
++    font-weight: 800; font-size: 1.15rem; padding: 1.1rem 1rem .4rem; }}
++[data-testid="stHeader"] {{ background: transparent; }}
++
++.hero {{ background: linear-gradient(120deg, {NAVY} 0%, #123A73 55%, {BLUE} 100%); color: #fff; border-radius: 20px;
++    padding: 28px 32px; margin-bottom: 1.2rem; box-shadow: 0 14px 34px rgba(11,31,58,.28); }}
++.hero h1 {{ color: #fff; margin: 0 0 .3rem 0; font-size: 2rem; }}
++.hero p {{ color: #CFE0FF; margin: 0 0 .9rem 0; font-size: 1.02rem; }}
++.pill {{ display: inline-block; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.28); color: #fff;
++    border-radius: 999px; padding: 3px 12px; margin: 0 6px 6px 0; font-size: .78rem; font-weight: 600; }}
++.pg-head {{ display: flex; align-items: center; gap: 14px; margin: 0 0 .3rem 0; }}
++.pg-icon {{ width: 46px; height: 46px; border-radius: 13px; display: flex; align-items: center; justify-content: center;
++    font-size: 1.5rem; background: linear-gradient(135deg, #E7EEFF, #D3E1FF); }}
++.pg-head h1 {{ margin: 0; font-size: 1.8rem; }}
++.kpi {{ background: #fff; border: 1px solid {LINE}; border-radius: 16px; padding: 16px 18px; border-top: 4px solid var(--tone);
++    box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 8px 20px rgba(15,23,42,.06); }}
++.kpi .k-label {{ color: {MUTED}; font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }}
++.kpi .k-value {{ color: {NAVY}; font-size: 1.9rem; font-weight: 800; line-height: 1.2; margin-top: 2px; }}
++.kpi .k-hint {{ color: {MUTED}; font-size: .82rem; margin-top: 2px; }}
++.step {{ background: #fff; border: 1px solid {LINE}; border-radius: 16px; padding: 16px 18px; min-height: 128px;
++    box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 8px 20px rgba(15,23,42,.05); }}
++.step .s-num {{ display: inline-flex; width: 28px; height: 28px; border-radius: 50%; background: {BLUE}; color: #fff;
++    align-items: center; justify-content: center; font-weight: 800; font-size: .85rem; margin-bottom: 8px; }}
++.step .s-title {{ color: {NAVY}; font-weight: 800; font-size: 1.02rem; }}
++.step .s-text {{ color: {MUTED}; font-size: .86rem; margin-top: 4px; }}
++.empty {{ background: #fff; border: 2px dashed #B9C8E6; border-radius: 16px; padding: 26px; text-align: center; color: {MUTED}; }}
++.empty b {{ color: {NAVY}; font-size: 1.05rem; }}
++.login-brand {{ text-align: center; margin: 2.5rem 0 1rem 0; }}
++.login-brand .logo {{ width: 64px; height: 64px; margin: 0 auto 10px auto; border-radius: 18px; display: flex; align-items: center;
++    justify-content: center; font-size: 2rem; background: linear-gradient(135deg, {NAVY}, {BLUE}); box-shadow: 0 10px 24px rgba(37,99,235,.35); }}
++.login-brand h1 {{ margin: 0; font-size: 1.8rem; }}
++.login-brand p {{ color: {MUTED}; margin: .2rem 0 0 0; }}
++</style>
++"""
++
++
++def inject():
++    """Add the stylesheet. Call once per run, right after st.set_page_config."""
++    st.markdown(CSS, unsafe_allow_html=True)
++
++
++def _e(text):
++    return html.escape(str(text), quote=True)
++
++
++def page_header_html(title, icon=""):
++    badge = f'<div class="pg-icon">{_e(icon)}</div>' if icon else ""
++    return f'<div class="pg-head">{badge}<h1>{_e(title)}</h1></div>'
++
++
++def page_header(title, icon=""):
++    """Replaces st.title: icon badge + title. The page's own st.caption follows it."""
++    st.markdown(page_header_html(title, icon), unsafe_allow_html=True)
++
++
++def hero(title, subtitle, pills=()):
++    chips = "".join(f'<span class="pill">{_e(p)}</span>' for p in pills)
++    st.markdown(f'<div class="hero"><h1>{_e(title)}</h1><p>{_e(subtitle)}</p>{chips}</div>', unsafe_allow_html=True)
++
++
++def kpi_html(label, value, hint="", tone="blue"):
++    color = TONES.get(tone, BLUE)
++    hint_html = f'<div class="k-hint">{_e(hint)}</div>' if hint else ""
++    return (f'<div class="kpi" style="--tone:{color}"><div class="k-label">{_e(label)}</div>'
++            f'<div class="k-value">{_e(value)}</div>{hint_html}</div>')
++
++
++def kpi(label, value, hint="", tone="blue"):
++    st.markdown(kpi_html(label, value, hint, tone), unsafe_allow_html=True)
++
++
++def step(number, title, text):
++    st.markdown(f'<div class="step"><div class="s-num">{_e(number)}</div><div class="s-title">{_e(title)}</div>'
++                f'<div class="s-text">{_e(text)}</div></div>', unsafe_allow_html=True)
++
++
++def empty(title, text):
++    st.markdown(f'<div class="empty"><b>{_e(title)}</b><br>{_e(text)}</div>', unsafe_allow_html=True)
++
++
++def login_header():
++    st.markdown('<div class="login-brand"><div class="logo">🧾</div><h1>Invoice dashboard</h1>'
++                '<p>Sign in to continue</p></div>', unsafe_allow_html=True)
++
++
++def version_label():
++    st.sidebar.caption(f"Version {__version__}")
+diff --git a/streamlit_app.py b/streamlit_app.py
+index b565042..645a655 100644
+--- a/streamlit_app.py
++++ b/streamlit_app.py
+@@ -1,13 +1,14 @@
+-"""Invoice dashboard, Streamlit version.   Run:  streamlit run streamlit_app.py
++"""Invoice dashboard, Streamlit version 2.   Run:  streamlit run streamlit_app.py
+ 
+ Packing plan -> MASTER_INVOICE.xlsx -> commercial invoices + packing lists. The invoice logic is the unchanged `invoicing/` package of the
+-Django version; this file only provides the pages, the password gate and the navigation."""
++Django version; this file only provides the pages, the password gate and the navigation. The look is in app_core/theme.py."""
+ import streamlit as st
+ 
+-st.set_page_config(page_title="Invoice dashboard", page_icon="🧾", layout="wide")
++st.set_page_config(page_title="Invoice dashboard", page_icon="🧾", layout="wide", initial_sidebar_state="expanded")
+ 
+-from app_core import auth, store  # noqa: E402  (after set_page_config)
++from app_core import auth, store, theme  # noqa: E402  (after set_page_config)
+ 
++theme.inject()
+ auth.require_login()
+ 
+ 
+@@ -19,13 +20,15 @@ def _seed_once():
+ 
+ _seed_once()
+ 
+-pages = [
+-    st.Page("views/build.py", title="Build invoices", icon="🧾", default=True),
+-    st.Page("views/master.py", title="Packing plan to master", icon="📦"),
+-    st.Page("views/consignees.py", title="Consignees", icon="🏢"),
+-    st.Page("views/marks.py", title="Shipping marks", icon="🏷️"),
+-    st.Page("views/data.py", title="Backup and data", icon="💾"),
+-]
++pages = {
++    "Overview": [st.Page("views/home.py", title="Dashboard", icon="🏠", default=True)],
++    "Invoicing": [st.Page("views/master.py", title="Packing plan to master", icon="📦"),
++                  st.Page("views/build.py", title="Build invoices", icon="🧾")],
++    "Master data": [st.Page("views/consignees.py", title="Consignees", icon="🏢"),
++                    st.Page("views/marks.py", title="Shipping marks", icon="🏷️")],
++    "System": [st.Page("views/data.py", title="Backup and data", icon="💾")],
++}
+ page = st.navigation(pages)
+ auth.sign_out_button()
++theme.version_label()
+ page.run()
+diff --git a/tests/smoke_pages.py b/tests/smoke_pages.py
+index fafb624..59d135f 100644
+--- a/tests/smoke_pages.py
++++ b/tests/smoke_pages.py
+@@ -84,7 +84,7 @@ if __name__ == "__main__":
+ 
+     # synthetic-free: uses the shipped template + a master built from whatever packing plan is given on the command line
+     plan = sys.argv[1] if len(sys.argv) > 1 else None
+-    pages = ["build.py", "master.py", "consignees.py", "marks.py", "data.py"]
++    pages = ["home.py", "build.py", "master.py", "consignees.py", "marks.py", "data.py"]
+     for p in pages:
+         f = run_page(p)
+         print(f"idle  {p:15s} ok  (frames={len(f.frames)})")
+@@ -93,6 +93,6 @@ if __name__ == "__main__":
+         run = runner.build_invoices(m["master"], "MASTER_INVOICE.xlsx")
+         store.save_consignee("12345", "Acme", "1 Road\nTown")
+         store.save_mark("12345", "ACME\nTOWN")
+-        for p, st in [("build.py", dict(run=run)), ("master.py", dict(master_run=m)), ("consignees.py", dict(run=run)), ("marks.py", {})]:
++        for p, st in [("home.py", dict(run=run)), ("build.py", dict(run=run)), ("master.py", dict(master_run=m)), ("consignees.py", dict(run=run)), ("marks.py", {})]:
+             f = run_page(p, st)
+             print(f"data  {p:15s} ok  (frames={len(f.frames)}, rows={sum(len(x) for x in f.frames)}, notes={len(f.messages)})")
+diff --git a/tests/test_theme.py b/tests/test_theme.py
+new file mode 100644
+index 0000000..8d16517
+--- /dev/null
++++ b/tests/test_theme.py
+@@ -0,0 +1,31 @@
++"""Version 2 look: the HTML helpers must escape anything that comes from data.   python -m unittest discover -s tests -v"""
++import sys
++import unittest
++from pathlib import Path
++
++sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
++from app_core import theme  # noqa: E402
++
++
++class ThemeTests(unittest.TestCase):
++    def test_page_header_escapes_markup(self):
++        out = theme.page_header_html("<script>alert(1)</script>", "🧾")
++        self.assertNotIn("<script>", out)
++        self.assertIn("&lt;script&gt;", out)
++
++    def test_kpi_escapes_markup_and_keeps_tone(self):
++        out = theme.kpi_html('<img src=x onerror=1>', "5", '"><b>', tone="green")
++        self.assertNotIn("<img", out)
++        self.assertNotIn("<b>", out)
++        self.assertIn(theme.GREEN, out)
++
++    def test_unknown_tone_falls_back_to_blue(self):
++        self.assertIn(theme.BLUE, theme.kpi_html("a", "b", tone="nope"))
++
++    def test_css_is_static_and_balanced(self):
++        self.assertEqual(theme.CSS.count("{"), theme.CSS.count("}"))
++        self.assertNotIn("http", theme.CSS)          # no external resources
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/views/build.py b/views/build.py
+index 48a9fbb..df7f5a7 100644
+--- a/views/build.py
++++ b/views/build.py
+@@ -6,10 +6,10 @@ from zoneinfo import ZoneInfo
+ import pandas as pd
+ import streamlit as st
+ 
+-from app_core import runner
++from app_core import runner, theme
+ from invoicing import engine
+ 
+-st.title("Build invoices")
++theme.page_header("Build invoices", "🧾")
+ st.caption("Upload MASTER_INVOICE.xlsx (make it on **Packing plan to master**). Each carton after the first one of an invoice becomes "
+            "SC260458-1, -2, ... The invoice date is the CRD of the packing plan (master column INV DATE).")
+ 
+diff --git a/views/consignees.py b/views/consignees.py
+index 67457d1..70e0799 100644
+--- a/views/consignees.py
++++ b/views/consignees.py
+@@ -2,10 +2,10 @@
+ import pandas as pd
+ import streamlit as st
+ 
+-from app_core import runner, store, uploads
++from app_core import runner, store, uploads, theme
+ from app_core.ui import apply_reset, flash, reset_choice, show_flash
+ 
+-st.title("Consignees")
++theme.page_header("Consignees", "🏢")
+ st.caption("One entry per **customer number** (e.g. 400447). An invoice gets a consignee only when its CUS NO is the same as the customer number "
+            "of the entry (000035 = 35 = 35.0); the country of the address does not matter. **United Kingdom** keeps the consignee address of the "
+            "Excel template when it has no entry of its own. Without a match the invoice shows the yellow placeholder.")
+diff --git a/views/data.py b/views/data.py
+index 6c29329..1a458bf 100644
+--- a/views/data.py
++++ b/views/data.py
+@@ -3,9 +3,9 @@ import json
+ 
+ import streamlit as st
+ 
+-from app_core import security, store
++from app_core import security, store, theme
+ 
+-st.title("Backup and data")
++theme.page_header("Backup and data", "💾")
+ st.caption("Consignees and shipping marks are the only data this app keeps. Uploaded workbooks and built invoices are held in your browser "
+            "session only and are gone when you sign out or close the tab.")
+ 
+diff --git a/views/home.py b/views/home.py
+new file mode 100644
+index 0000000..b22bd3a
+--- /dev/null
++++ b/views/home.py
+@@ -0,0 +1,69 @@
++"""Dashboard (home): what the app holds, the 4-step workflow, and the result of the last build in this session."""
++import pandas as pd
++import streamlit as st
++
++from app_core import runner, store, theme
++
++consignees, marks = store.consignees(), store.marks()
++run = st.session_state.get("run")
++dupes = len(store.conflicts("consignee")) + len(store.conflicts("shippingmark"))
++
++theme.hero("Invoice dashboard", "Packing plan → master invoice → commercial invoices and packing lists, in one place.",
++           pills=("🔒 Password protected", "🛡️ Upload checks", "📝 Audit log"))
++
++# ------------------------------------------------------------------ key numbers
++c1, c2, c3, c4 = st.columns(4)
++with c1:
++    theme.kpi("Consignees", f"{len(consignees):,}", "saved by customer number", "blue")
++with c2:
++    theme.kpi("Shipping marks", f"{len(marks):,}", "saved by customer number", "teal")
++if run:
++    t = run["result"]["totals"]
++    with c3:
++        theme.kpi("Last build: invoices", f"{t['invoices']:,}", f"{t['qty']:,} pieces", "navy")
++    with c4:
++        theme.kpi("Last build: amount", f"${t['amount']:,.0f}", "USD", "green")
++else:
++    with c3:
++        theme.kpi("Last build", "none yet", "in this session", "navy")
++    with c4:
++        theme.kpi("Data check", "OK" if not dupes else f"{dupes} to fix", "duplicate customer numbers" if dupes else "no duplicates",
++                  "green" if not dupes else "amber")
++
++# ------------------------------------------------------------------ workflow
++st.markdown("#### How it works")
++steps = [("1", "Packing plan to master", "Upload the packing plan and get MASTER_INVOICE.xlsx.", "views/master.py", "📦"),
++         ("2", "Build invoices", "Upload the master: invoices and packing lists are built and checked.", "views/build.py", "🧾"),
++         ("3", "Consignees", "Keep the consignee address of every customer number.", "views/consignees.py", "🏢"),
++         ("4", "Shipping marks", "Keep the shipping marks printed on each invoice.", "views/marks.py", "🏷️")]
++for col, (n, title, text, page, icon) in zip(st.columns(4), steps):
++    with col:
++        theme.step(n, title, text)
++        st.page_link(page, label=f"Open {title.lower()}" if len(title) < 16 else "Open", icon=icon)
++
++# ------------------------------------------------------------------ last build
++st.markdown("#### Last build")
++if not run:
++    theme.empty("Nothing built in this session yet", "Upload a master invoice on the Build invoices page. Uploaded files and results are kept in this "
++                "browser session only and are dropped when you sign out.")
++    st.page_link("views/build.py", label="Go to Build invoices", icon="🧾")
++else:
++    r = run["result"]
++    sc = runner.status_counts(r)
++    left, right = st.columns([1, 1])
++    with left:
++        st.markdown(f"**{r['master_name']}**")
++        s1, s2 = st.columns(2)
++        s1.metric("Ready to send", f"{sc['ok']:,} of {sc['total']:,}")
++        s2.metric("Need checking", f"{sc['pending']:,}")
++        st.progress(sc["ok"] / sc["total"] if sc["total"] else 0.0, text=f"{sc['ok']} ready, {sc['pending']} pending")
++        st.page_link("views/build.py", label="Open the result and downloads", icon="🧾")
++    with right:
++        st.caption("Amount by country (USD)")
++        df = pd.DataFrame(r["by_country"])
++        if not df.empty:
++            st.bar_chart(df.set_index("country")["amount"].sort_values(ascending=False).head(8), color="#2563EB", height=240)
++
++if dupes:
++    st.warning(f"{dupes} customer number(s) are saved twice, written differently (for example 000035 and 35). Only one can match an invoice.")
++    st.page_link("views/data.py", label="Open Backup and data", icon="💾")
+diff --git a/views/marks.py b/views/marks.py
+index 70c90d8..a192747 100644
+--- a/views/marks.py
++++ b/views/marks.py
+@@ -2,11 +2,11 @@
+ import pandas as pd
+ import streamlit as st
+ 
+-from app_core import store
++from app_core import store, theme
+ from app_core.ui import apply_reset, flash, reset_choice, show_flash
+ from invoicing import shipmarks
+ 
+-st.title("Shipping marks")
++theme.page_header("Shipping marks", "🏷️")
+ st.caption("The marks of a customer number are printed on every invoice whose CUS NO matches (INV, PL and INV.BKK). A customer number without "
+            "marks gets a yellow placeholder and a warning.")
+ 
+diff --git a/views/master.py b/views/master.py
+index 3db72ae..22a89a0 100644
+--- a/views/master.py
++++ b/views/master.py
+@@ -2,12 +2,12 @@
+ import pandas as pd
+ import streamlit as st
+ 
+-from app_core import runner
++from app_core import runner, theme
+ from invoicing import extract
+ 
+ XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+ 
+-st.title("Packing plan to master")
++theme.page_header("Packing plan to master", "📦")
+ tab_master, tab_transform = st.tabs(["Build master invoice", "Transform column names"])
+ 
+ # ------------------------------------------------------------------ build the master
+-- 
+2.43.0
+

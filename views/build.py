@@ -1,25 +1,71 @@
 """Master invoice -> commercial invoices + packing lists, with the result view."""
+import time
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 import streamlit as st
 
-from app_core import jobs_ui, runner, theme, ui
+from app_core import runner
 from invoicing import engine
 
-theme.page_header("Build invoices", "🧾")
+st.title("Build invoices")
 st.caption("Upload MASTER_INVOICE.xlsx (make it on **Packing plan to master**). Each carton after the first one of an invoice becomes "
            "SC260458-1, -2, ... The invoice date is the CRD of the packing plan (master column INV DATE).")
 
 
-# The build runs in a background job (app_core/jobs.py), not in this page, so opening another page does not stop it.
-# This page only starts the job, shows its progress (jobs_ui.live_panel) and the result / failure when it ends.
-_local, _duration = ui.local_time, ui.duration
+# ------------------------------------------------------------------ live progress while a build runs
+def _with_progress(label, work):
+    """Run work(on_progress) inside a status box that shows, while it runs: the start time, a progress bar with the current step
+    (invoice n of N, saving files ...), the elapsed time and a rough time left. Returns what work returns; errors are re-raised."""
+    t0 = time.perf_counter()
+    started = _local(datetime.now(timezone.utc).isoformat())
+    with st.status(label, expanded=True) as box:
+        st.write(f"**Started:** {started}")
+        bar = st.progress(0.0, text="Starting ...")
+        info = st.empty()
+
+        def on_progress(fraction, text):
+            elapsed = time.perf_counter() - t0
+            bar.progress(max(0.0, min(float(fraction), 1.0)), text=f"{text}  ({fraction * 100:.0f}%)")
+            left = f" · about {_duration(elapsed * (1 - fraction) / fraction)} left" if fraction >= 0.15 else ""
+            info.caption(f"Elapsed {_duration(elapsed)}{left}")
+
+        try:
+            out = work(on_progress)
+        except Exception:
+            box.update(label="Build stopped", state="error", expanded=True)
+            raise
+        box.update(label=f"Finished in {_duration(time.perf_counter() - t0)}", state="complete", expanded=False)
+    return out
 
 
 # ------------------------------------------------------------------ result view
+def _local(iso):
+    """A stored UTC time as 'YYYY-MM-DD HH:MM:SS <zone>' in the browser's time zone (UTC when the browser's zone is not known)."""
+    dt = datetime.fromisoformat(iso)
+    try:
+        tz = getattr(st.context, "timezone", None)
+        if tz:
+            dt = dt.astimezone(ZoneInfo(tz))
+    except Exception:
+        pass
+    return f"{dt:%Y-%m-%d %H:%M:%S} {dt.tzname() or ''}".strip()
+
+
+def _duration(seconds):
+    m, s = divmod(float(seconds), 60)
+    return f"{int(m)} min {s:04.1f} s" if m >= 1 else f"{s:.1f} s"
+
+
 def _rebuild(run):
-    if jobs_ui.start("rebuild", "Building the invoices again with the consignees saved now", run["result"]["master_name"],
-                     lambda progress: runner.rebuild(run, progress=progress)):
-        st.rerun()
+    try:
+        st.session_state["run"] = _with_progress("Building the invoices again with the consignees saved now ...",
+                                                 lambda on_progress: runner.rebuild(run, progress=on_progress))
+    except Exception as e:
+        st.error(f"Could not build the invoices again: {e}")
+        return
+    st.rerun()
 
 
 def show_run(run):
@@ -89,7 +135,7 @@ def show_run(run):
         if fixable:
             st.info(f"A consignee is saved now for {len(fixable)} invoice(s) that printed the placeholder: {', '.join(fixable[:8])}"
                     + (" ..." if len(fixable) > 8 else ""))
-            if st.button("Update invoices", key="rebuild_fix", type="primary", disabled=jobs_ui.is_busy()):
+            if st.button("Update invoices", key="rebuild_fix", type="primary"):
                 _rebuild(run)
     else:
         st.success("Nothing to check: no warnings.")
@@ -142,10 +188,6 @@ def show_run(run):
     c2.bar_chart(bc.set_index("Country")["Amount (USD)"])
 
 
-# ------------------------------------------------------------------ running build and how the last ones ended
-jobs_ui.show_failures("build", detail=True)         # failed / cancelled builds, with every problem of a bad master and its row
-jobs_ui.live_panel()                                # the running build: progress, time left, cancel
-
 # ------------------------------------------------------------------ upload form
 handoff = st.session_state.get("master_handoff")
 up = st.file_uploader("MASTER_INVOICE.xlsx", type=["xlsx"], key="build_master")
@@ -164,14 +206,19 @@ with st.expander("Options"):
                                help="The first group keeps its composition line, the next groups lose it and groups are description + HTS code only.")
     tpl = st.file_uploader("Invoice template (optional, default: assets/invoice_template.xlsx)", type=["xlsx"], key="build_template")
 
-busy = jobs_ui.is_busy()
-if st.button("Build invoices", type="primary", disabled=(up is None and not handoff) or busy):
+if st.button("Build invoices", type="primary", disabled=(up is None and not handoff)):
     st.session_state.pop("run", None)                       # a failed build must not leave the previous result on screen
     data, name = (up.getvalue(), up.name) if up else (handoff["data"], handoff["source"])
-    tpl_bytes = tpl.getvalue() if tpl else None
-    if jobs_ui.start("build", "Building the invoices", name,
-                     lambda progress: runner.build_invoices(data, name, tpl_bytes, merge, hide_content, progress=progress)):
-        st.rerun()                                          # the page now shows the running job; the build goes on if the user leaves
+    try:
+        tpl_bytes = tpl.getvalue() if tpl else None
+        st.session_state["run"] = _with_progress("Building the invoices ...",
+                                                 lambda on_progress: runner.build_invoices(data, name, tpl_bytes, merge, hide_content, progress=on_progress))
+    except runner.InvalidMaster as e:                       # nothing was generated: every problem with its row
+        st.error("Could not build the invoices: the master workbook has problems. Fix them and upload it again.")
+        for p in e.problems:
+            st.write(f"- {p}")
+    except Exception as e:                                  # bad workbook, missing columns, ...
+        st.error(f"Could not build the invoices: {e}")
 
 if st.session_state.get("run"):
     show_run(st.session_state["run"])

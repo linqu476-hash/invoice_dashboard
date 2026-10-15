@@ -15,7 +15,7 @@ import openpyxl
 
 from invoicing import engine, extract, presell, report_pdf, validation
 
-from . import security, store
+from . import store
 
 TEMPLATE_XLSX = Path(__file__).resolve().parent.parent / "assets" / "invoice_template.xlsx"
 MAX_BYTES = validation.MAX_UPLOAD_BYTES
@@ -34,7 +34,6 @@ def _check_size(name, data):
         raise ValueError(f"{name}: the file is empty.")
     if len(data) > MAX_BYTES:
         raise ValueError(f"{name}: the file is larger than {MAX_BYTES // (1024 * 1024)} MB.")
-    security.check_upload(name, data, kinds=("xlsx",), max_bytes=MAX_BYTES, ext="xlsx")     # real .xlsx content, no zip bomb (ValueError subclass)
 
 
 # ---------------------------------------------------------------- step 1: packing plan -> master
@@ -124,10 +123,7 @@ def build_invoices(master_bytes, master_name, template_bytes=None, merge=True, h
     """Validate the master, build every invoice. Returns the 'run' dict kept in the session:
     result (engine output + validation), files {name: bytes}, report_pdf (bytes), validation_csv (text), and what is needed to build again."""
     timing = _clock()
-    try:
-        _check_size(master_name, master_bytes)
-    except security.UploadRejected as e:             # not a real workbook: same friendly list of problems as a bad master
-        raise InvalidMaster([str(e)]) from None
+    _check_size(master_name, master_bytes)
     if template_bytes:
         _check_size("template", template_bytes)
     result, files, rep = _build(master_bytes, template_bytes, merge, hide_content, progress)
