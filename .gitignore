@@ -3,6 +3,15 @@ __pycache__/
 .venv/
 # customer data and secrets never go to git
 .streamlit/secrets.toml
+secrets.toml
 data/*.sqlite3
 data/seed.json
+data/*.log
+data/lockout.json
 .env
+.env.*
+*.pem
+*.key
+# generated invoices / customer workbooks
+MASTER_INVOICE*.xlsx
+*_backup.json

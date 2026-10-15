@@ -1,6 +1,12 @@
 [server]
 maxUploadSize = 50          # MB; the invoice rules themselves cap one workbook at 20 MB
-enableXsrfProtection = true
+enableXsrfProtection = true # keep on: protects uploads / downloads against cross-site requests
+enableCORS = true           # keep on: only the app's own origin may talk to the server
+headless = true
+
+[client]
+showErrorDetails = "none"   # visitors see a generic message, never a stack trace (details stay in the server log)
+toolbarMode = "viewer"      # hides the developer menu
 
 [browser]
 gatherUsageStats = false

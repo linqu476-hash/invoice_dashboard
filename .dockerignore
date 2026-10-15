@@ -1,0 +1,12 @@
+.git
+.github
+.streamlit/secrets.toml
+.env
+data/*.sqlite3
+data/*.log
+data/lockout.json
+data/seed.json
+__pycache__/
+*.pyc
+.venv/
+tests/

@@ -1,53 +1,98 @@
-"""Password gate. The app handles customer addresses and invoice data, so it refuses to run without a password.
+"""Password gate (security layer 1). The app handles customer addresses and invoice data, so it refuses to run without a password.
 
-The password comes from the host's secrets (APP_PASSWORD in .streamlit/secrets.toml or the Secrets box of the host) or an
-environment variable of the same name. This is ONE shared password: there are no per-user accounts, roles or audit trail
-(the Django version had them). For per-user sign-in use Streamlit's st.login (OIDC) or put the app behind your company's
-SSO / reverse proxy."""
-import hmac
+Secrets (in .streamlit/secrets.toml, the host's Secrets box, or environment variables of the same name):
+  APP_PASSWORD_HASH   recommended: a scrypt hash made with  python scripts/make_password_hash.py  (the password itself is never stored)
+  APP_PASSWORD        plain password, still accepted when no hash is set
+  IDLE_TIMEOUT_MIN    sign out after this many minutes without activity (default 30)
+  MAX_SESSION_HOURS   sign out after this many hours in any case (default 12)
+
+Protection: constant-time check, lockout after repeated wrong passwords that survives a refresh and applies to every session
+(app_core/authlib.py), idle and absolute session timeouts, and an audit line for every sign-in event.
+This is still ONE shared password: for per-user accounts use Streamlit's st.login (OIDC) or put the app behind your company's SSO.
+"""
 import os
 import time
 
 import streamlit as st
 
-MAX_FAILS_BEFORE_DELAY = 3
+from . import authlib, security
+
+
+def _setting(name, default=None):
+    try:
+        value = st.secrets.get(name)
+    except Exception:                      # no secrets file at all
+        value = None
+    return str(value) if value else os.environ.get(name, default)
 
 
 def _expected():
+    return _setting("APP_PASSWORD_HASH") or _setting("APP_PASSWORD")
+
+
+def _number(name, default):
     try:
-        value = st.secrets.get("APP_PASSWORD")
-    except Exception:                      # no secrets file at all
-        value = None
-    return str(value) if value else os.environ.get("APP_PASSWORD")
+        return float(_setting(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _expired():
+    """Reason text when the signed-in session ran out, else None."""
+    now = time.time()
+    idle, absolute = _number("IDLE_TIMEOUT_MIN", 30) * 60, _number("MAX_SESSION_HOURS", 12) * 3600
+    if now - st.session_state.get("auth_last", now) > idle:
+        return "idle"
+    if now - st.session_state.get("auth_start", now) > absolute:
+        return "max_age"
+    return None
 
 
 def require_login():
     """Stop the script with a sign-in form until the password is right."""
     expected = _expected()
     if not expected:
-        st.error("**No password is configured.** Set `APP_PASSWORD` in `.streamlit/secrets.toml` (local) or in the host's Secrets "
-                 "(see `.streamlit/secrets.toml.example`). The app will not start without one.")
+        st.error("**No password is configured.** Set `APP_PASSWORD_HASH` (or `APP_PASSWORD`) in `.streamlit/secrets.toml` (local) or in the "
+                 "host's Secrets (see `.streamlit/secrets.toml.example`). The app will not start without one.")
         st.stop()
     if st.session_state.get("auth_ok"):
-        return
+        reason = _expired()
+        if reason is None:
+            st.session_state["auth_last"] = time.time()
+            return
+        security.audit("session_expired", reason=reason)
+        st.session_state.clear()           # drops the uploaded files and built invoices held in this session
+        st.session_state["auth_notice"] = "You were signed out because the session was idle too long." if reason == "idle" \
+            else "You were signed out because the session reached its maximum length."
     st.title("🧾 Invoice dashboard")
+    if st.session_state.get("auth_notice"):
+        st.info(st.session_state.pop("auth_notice"))
+    left = authlib.seconds_locked()
+    if left:
+        st.error(f"Too many wrong passwords. Sign-in is locked for {left} more seconds, then try again.")
+        st.stop()
     with st.form("login"):
         pw = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Sign in")
     if submitted:
-        if hmac.compare_digest(pw.encode("utf-8"), expected.encode("utf-8")):
-            st.session_state["auth_ok"] = True
-            st.session_state["fails"] = 0
+        if authlib.seconds_locked():
             st.rerun()
-        fails = st.session_state.get("fails", 0) + 1
-        st.session_state["fails"] = fails
-        if fails > MAX_FAILS_BEFORE_DELAY:
-            time.sleep(min(2 * (fails - MAX_FAILS_BEFORE_DELAY), 10))     # slows guessing within one session (not per IP)
-        st.error("Wrong password.")
+        if authlib.verify_password(pw, expected):
+            authlib.record_success()
+            security.audit("login_ok")
+            st.session_state.update(auth_ok=True, auth_start=time.time(), auth_last=time.time())
+            st.rerun()
+        lock = authlib.record_failure()
+        security.audit("login_failed", locked_seconds=lock)
+        if lock:
+            st.error(f"Too many wrong passwords. Sign-in is locked for {lock} seconds.")
+        else:
+            st.error("Wrong password.")
     st.stop()
 
 
 def sign_out_button():
     if st.sidebar.button("Sign out"):
+        security.audit("logout")
         st.session_state.clear()           # also drops the uploaded files and built invoices held in this session
         st.rerun()

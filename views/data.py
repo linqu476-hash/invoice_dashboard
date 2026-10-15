@@ -3,7 +3,7 @@ import json
 
 import streamlit as st
 
-from app_core import store
+from app_core import security, store
 
 st.title("Backup and data")
 st.caption("Consignees and shipping marks are the only data this app keeps. Uploaded workbooks and built invoices are held in your browser "
@@ -20,8 +20,9 @@ c1.metric("Consignees", n_c)
 c2.metric("Shipping marks", n_m)
 
 st.subheader("Download a backup")
-st.download_button("⬇ Backup (JSON)", json.dumps(store.export_data(), ensure_ascii=False, indent=2).encode("utf-8"),
-                   file_name="invoice_dashboard_backup.json", mime="application/json", type="primary")
+if st.download_button("⬇ Backup (JSON)", json.dumps(store.export_data(), ensure_ascii=False, indent=2).encode("utf-8"),
+                      file_name="invoice_dashboard_backup.json", mime="application/json", type="primary"):
+    security.audit("backup_download")
 st.caption("Contains customer addresses: keep it private. The same file can be saved as `data/seed.json` to refill an empty database at startup.")
 
 st.subheader("Restore a backup")
@@ -29,10 +30,12 @@ bk = st.file_uploader("Backup file (.json)", type=["json"], key="restore_file")
 replace = st.checkbox("Replace everything (delete the current consignees and marks first)", key="restore_replace")
 if st.button("Restore", disabled=bk is None):
     try:
-        res = store.import_data(json.loads(bk.getvalue().decode("utf-8")), replace=replace)
-    except (ValueError, UnicodeDecodeError) as e:
+        res = store.import_data(security.load_json_backup(bk.getvalue()), replace=replace)
+    except (ValueError, UnicodeDecodeError) as e:      # UploadRejected is a ValueError
+        security.audit("restore_rejected", file=bk.name)
         st.error(f"Could not restore: {e}")
     else:
+        security.audit("restore", replace=replace, **res)
         st.success(f"Restored {res['consignees']} consignees and {res['shippingmarks']} shipping marks.")
 
 st.subheader("Import from the Django version")
@@ -44,9 +47,11 @@ if st.button("Import", disabled=old is None):
     try:
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "old.sqlite3"
-            p.write_bytes(old.getvalue())
+            p.write_bytes(security.check_upload(old.name, old.getvalue(), kinds=("sqlite",), max_bytes=security.MAX_SQLITE_BYTES))
             res = store.import_django_db(p)
     except Exception as e:
+        security.audit("django_import_rejected", file=old.name)
         st.error(f"Could not import: {e}")
     else:
+        security.audit("django_import", **res)
         st.success(f"Imported {res['consignees']} consignees and {res['shippingmarks']} shipping marks.")

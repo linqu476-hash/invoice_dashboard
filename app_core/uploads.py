@@ -7,10 +7,20 @@ from pathlib import PurePosixPath
 
 from invoicing import shipmarks
 
-from . import store
+from . import security, store
 
 MAX_SI_FILES = 500                 # Excel files in one upload (zip members count)
 MAX_SI_BYTES = 20 * 1024 * 1024    # one Excel file
+MAX_ZIP_BYTES = 200 * 1024 * 1024  # one .zip upload
+
+
+def _checked(display, base, content):
+    """(display, base, content, None) when the bytes really are an Excel workbook, else the same with the reason."""
+    try:
+        security.check_upload(base, content, kinds=("xls", "xlsx"), max_bytes=MAX_SI_BYTES)
+    except security.UploadRejected as e:
+        return display, base, None, str(e)
+    return display, base, content, None
 
 
 def iter_si_uploads(files):
@@ -21,7 +31,11 @@ def iter_si_uploads(files):
         low = name.lower()
         if low.endswith(".zip"):
             try:
+                security.check_upload(name, data, kinds=("zip",), max_bytes=MAX_ZIP_BYTES)
                 z = zipfile.ZipFile(io.BytesIO(data))
+            except security.UploadRejected as e:
+                yield name, name, None, str(e)
+                continue
             except zipfile.BadZipFile:
                 yield name, name, None, "Cannot read the zip file."
                 continue
@@ -39,7 +53,7 @@ def iter_si_uploads(files):
                     elif i.file_size > MAX_SI_BYTES:
                         yield f"{name} / {base}", base, None, "Skipped: file is larger than 20 MB."
                     else:
-                        yield f"{name} / {base}", base, z.read(i), None
+                        yield _checked(f"{name} / {base}", base, z.read(i))
         elif low.endswith((".xls", ".xlsx")):
             n += 1
             if n > MAX_SI_FILES:
@@ -47,7 +61,7 @@ def iter_si_uploads(files):
             elif len(data) > MAX_SI_BYTES:
                 yield name, name, None, "Skipped: file is larger than 20 MB."
             else:
-                yield name, name, data, None
+                yield _checked(name, name, data)
         else:
             yield name, name, None, "Not an Excel file: use .xls, .xlsx or a .zip of them."
 

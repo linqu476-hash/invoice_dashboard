@@ -7,11 +7,11 @@ The invoice logic is the **unchanged `invoicing/` package**; this project replac
 
 ```bash
 pip install -r requirements.txt
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml     # then set APP_PASSWORD
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml     # then set APP_PASSWORD_HASH (see Security)
 streamlit run streamlit_app.py
 ```
 
-The app refuses to start without `APP_PASSWORD` (it handles customer addresses and invoice data).
+The app refuses to start without `APP_PASSWORD_HASH` (or `APP_PASSWORD`) (it handles customer addresses and invoice data).
 
 ## Pages
 
@@ -31,6 +31,28 @@ These need a database of runs and user accounts, which a Streamlit app on an ord
 - **Roles (Operator / Administrator), per-user run ownership, sign-in lockout, audit trail, Django admin.** Replaced by **one shared password** (`APP_PASSWORD`). For real per-user sign-in use Streamlit's `st.login` (OIDC) or put the app behind your company's SSO / reverse proxy.
 
 If you need those, keep the Django app for them; both can share the same `invoicing/` package.
+
+## Security
+
+Three layers, so one failure does not expose customer data.
+
+**1. Sign-in** (`app_core/auth.py`, `app_core/authlib.py`)
+- Store a **hash**, not the password: run `python scripts/make_password_hash.py` and put the printed `APP_PASSWORD_HASH` line in the secrets. Plain `APP_PASSWORD` still works.
+- After 5 wrong passwords in a row, sign-in is locked for 1 minute, doubling up to 15 minutes. The lock is kept in a file, so refreshing the page or opening another tab does not reset it. It is global (Streamlit does not give the app the visitor's IP), so while someone is guessing, real users wait too.
+- Sessions end after 30 idle minutes or 12 hours (`IDLE_TIMEOUT_MIN`, `MAX_SESSION_HOURS`) and the uploaded files are dropped.
+
+**2. Uploads and data in** (`app_core/security.py`)
+- Every upload is checked by its content, not only its extension: real `.xlsx` / `.xls` / SQLite / JSON, size limits, and for zip-based files no zip bombs (entry count, expanded size, compression ratio), no `../` paths, no encrypted entries.
+- Customer text that starts with `=` is stored with a leading quote so it cannot run as a formula in the invoices.
+
+**3. Data at rest, deployment and supply chain**
+- An audit log (`data/audit.log`, next to the database) records sign-ins, failures, lockouts, restores and backups. It never records passwords or file contents.
+- The database, audit log and lockout files are created readable by the app's user only (0600).
+- Streamlit settings hide stack traces from visitors and keep XSRF and CORS protection on.
+- The Docker image runs as a non-root user, has a health check, and never contains secrets or databases (`.dockerignore`).
+- GitHub Actions (`.github/workflows/security.yml`) runs the tests, `pip-audit` (vulnerable dependencies), `bandit` (code scan) and `gitleaks` (secrets in the history) on every push and every week. Dependabot opens update pull requests.
+
+Not covered: per-user accounts and roles, and HTTPS. Serve the app only behind HTTPS (Streamlit Community Cloud, or a reverse proxy such as Caddy / nginx), and use `st.login` or your company SSO if each person needs their own account.
 
 ## Deploying
 

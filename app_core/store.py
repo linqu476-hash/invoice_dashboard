@@ -15,6 +15,8 @@ from pathlib import Path
 
 from invoicing import engine, shipmarks
 
+from . import security
+
 ROOT = Path(__file__).resolve().parent.parent
 SEED_FILE = ROOT / "data" / "seed.json"
 
@@ -47,10 +49,13 @@ def db_path():
 def _conn():
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    fresh = not path.exists()
     c = sqlite3.connect(path, timeout=15)
     c.row_factory = sqlite3.Row
     try:
         c.executescript(SCHEMA)
+        if fresh:
+            security.private(path)           # customer addresses: readable by the app's user only
         yield c
         c.commit()
     except Exception:
@@ -58,6 +63,9 @@ def _conn():
         raise
     finally:
         c.close()
+
+
+_t = security.neutralize_formula        # text that starts with "=" would become a formula when written into a workbook
 
 
 def _now():
@@ -95,7 +103,7 @@ def marks_table():
 
 def save_consignee(customer_no, name, address, pk=None):
     """Add (pk None) or edit one consignee by hand. Raises ValueError with the same rules as the Django form."""
-    cus, name, address = (customer_no or "").strip(), (name or "").strip(), (address or "").strip()
+    cus, name, address = (customer_no or "").strip(), _t((name or "").strip()), _t((address or "").strip())
     with _conn() as c:
         old = c.execute("SELECT * FROM consignee WHERE id=?", (pk,)).fetchone() if pk else None
         uk = engine.country_key(old["country"] if old else "") == "UNITED KINGDOM"
@@ -123,6 +131,7 @@ def save_si_consignee(item):
         raise shipmarks.MarksError("Shipping instruction: no customer number found next to 'sold to' (or in the file name), so the consignee "
                                    "cannot be matched to an invoice.")
     country = (item["country"] or "").strip().upper()
+    item = dict(item, name=_t(item["name"]), address=_t(item["address"]))
     with _conn() as c:
         rows = [dict(r) for r in c.execute("SELECT * FROM consignee ORDER BY id")]
         cur = next((r for r in rows if r["customer_no"].strip() and engine.cus_key(r["customer_no"]) == key), None)
@@ -157,6 +166,7 @@ def save_mark(customer_no, marks_text, note="", source="", pk=None):
         raise ValueError("Customer number is required.")
     if not (marks_text or "").strip():
         raise ValueError("Shipping marks are required (one line per row).")
+    marks_text, note = _t(marks_text), _t(note or "")
     key = engine.cus_key(cus)
     with _conn() as c:
         rows = [dict(r) for r in c.execute("SELECT id, customer_no FROM shippingmark")]
@@ -179,6 +189,7 @@ def save_marks_items(items, source):
     with _conn() as c:
         existing = {engine.cus_key(m["customer_no"]): dict(m) for m in c.execute("SELECT * FROM shippingmark")}
         for d in items:
+            d = dict(d, marks=_t(d["marks"]), note=_t(d.get("note", "")))
             m = existing.get(engine.cus_key(d["customer_no"]))
             if m is None:
                 status = "added"
@@ -199,9 +210,9 @@ def delete_mark(pk):
 
 def conflicts(kind):
     """Customer numbers that are the same number written differently (000035 / 35): lists of the spellings. kind: 'consignee' | 'shippingmark'."""
-    assert kind in ("consignee", "shippingmark")
+    sql = {"consignee": "SELECT customer_no FROM consignee", "shippingmark": "SELECT customer_no FROM shippingmark"}[kind]   # fixed queries only
     groups = {}
-    for o in _rows(f"SELECT customer_no FROM {kind}"):
+    for o in _rows(sql):
         k = engine.cus_key(o["customer_no"])
         if k:
             groups.setdefault(k, []).append(o["customer_no"])
@@ -211,6 +222,7 @@ def conflicts(kind):
 # ---------------------------------------------------------------- reading Excel uploads
 def read_si_bytes(filename, data):
     """Shipping Instruction workbook (bytes) -> consignee item dict. Raises shipmarks.MarksError for a file that is not usable."""
+    security.check_upload(filename, data, kinds=("xls", "xlsx"))
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / ("si" + Path(filename).suffix.lower())
         p.write_bytes(data)
@@ -218,6 +230,7 @@ def read_si_bytes(filename, data):
 
 
 def read_marks_bytes(filename, data):
+    security.check_upload(filename, data, kinds=("xls", "xlsx"))
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / ("consignee" + Path(filename).suffix.lower())
         p.write_bytes(data)
@@ -242,7 +255,7 @@ def import_data(data, replace=False):
             c.execute("DELETE FROM shippingmark")
         for r in data.get("consignees", []):
             cus = str(r.get("customer_no", "") or "").strip()
-            args = (str(r.get("country", "") or "").strip().upper(), cus, str(r.get("name", "") or ""), str(r.get("address", "") or ""), str(r.get("marks", "") or ""))
+            args = (str(r.get("country", "") or "").strip().upper(), cus, _t(str(r.get("name", "") or "")), _t(str(r.get("address", "") or "")), _t(str(r.get("marks", "") or "")))
             cur = None
             if cus:
                 cur = next((x for x in c.execute("SELECT id, customer_no FROM consignee") if x["customer_no"].strip() and engine.cus_key(x["customer_no"]) == engine.cus_key(cus)), None)
@@ -259,7 +272,7 @@ def import_data(data, replace=False):
             if not cus or not str(m.get("marks", "") or "").strip():
                 continue
             cur = next((x for x in c.execute("SELECT id, customer_no FROM shippingmark") if engine.cus_key(x["customer_no"]) == engine.cus_key(cus)), None)
-            args = (cus, str(m["marks"]), str(m.get("note", "") or ""), str(m.get("source", "") or ""), str(m.get("updated", "") or _now()))
+            args = (cus, _t(str(m["marks"])), _t(str(m.get("note", "") or "")), str(m.get("source", "") or ""), str(m.get("updated", "") or _now()))
             if cur:
                 c.execute("UPDATE shippingmark SET customer_no=?, marks=?, note=?, source=?, updated=? WHERE id=?", args + (cur["id"],))
             else:
