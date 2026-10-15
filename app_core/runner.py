@@ -94,11 +94,13 @@ def check_lines(result):
     return lines + [validation.describe(i) for i in v.get("issues", [])], list(v.get("differences", []))
 
 
-def _build(master_bytes, template_bytes, merge, hide_content):
+def _build(master_bytes, template_bytes, merge, hide_content, progress=None):
+    say = progress or (lambda fraction, text: None)
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         master = d / "master.xlsx"
         master.write_bytes(master_bytes)
+        say(0.02, "Checking the master workbook ...")
         rep = validation.validate_master(master)        # stop BEFORE building when the workbook cannot give correct documents
         if rep.errors:
             raise InvalidMaster([validation.describe(i) for i in rep.errors])
@@ -108,30 +110,32 @@ def _build(master_bytes, template_bytes, merge, hide_content):
         else:
             template = TEMPLATE_XLSX
         out = d / "output"
+        say(0.06, "Master is valid. Building the invoices ...")
         result = engine.process(master, template, None, None, out, store.consignee_table(),
-                                hide_comp=(True if hide_content else None), merge=merge, marks=store.marks_table())
+                                hide_comp=(True if hide_content else None), merge=merge, marks=store.marks_table(),
+                                progress=lambda fraction, text: say(0.06 + 0.86 * fraction, text))
         result["validation"] = _validation_block(rep, result["totals"])
         files = {p.name: p.read_bytes() for p in sorted(out.iterdir()) if p.is_file()}
         return result, files, rep
 
 
-def build_invoices(master_bytes, master_name, template_bytes=None, merge=True, hide_content=False):
+def build_invoices(master_bytes, master_name, template_bytes=None, merge=True, hide_content=False, progress=None):
     """Validate the master, build every invoice. Returns the 'run' dict kept in the session:
     result (engine output + validation), files {name: bytes}, report_pdf (bytes), validation_csv (text), and what is needed to build again."""
     timing = _clock()
     _check_size(master_name, master_bytes)
     if template_bytes:
         _check_size("template", template_bytes)
-    result, files, rep = _build(master_bytes, template_bytes, merge, hide_content)
+    result, files, rep = _build(master_bytes, template_bytes, merge, hide_content, progress)
     return _finish(dict(master_bytes=master_bytes, template_bytes=template_bytes, merge=merge, hide_content=hide_content,
-                        run_id=uuid.uuid4().hex), result, files, master_name, built=None, timing=timing)
+                        run_id=uuid.uuid4().hex), result, files, master_name, built=None, timing=timing, progress=progress)
 
 
-def rebuild(run):
+def rebuild(run, progress=None):
     """Build the invoices of a finished run again with the consignees / shipping marks saved NOW."""
     timing = _clock()
-    result, files, _ = _build(run["master_bytes"], run["template_bytes"], run["merge"], run["hide_content"])
-    return _finish(dict(run), result, files, run["result"]["master_name"], built=date.today().isoformat(), timing=timing)
+    result, files, _ = _build(run["master_bytes"], run["template_bytes"], run["merge"], run["hide_content"], progress)
+    return _finish(dict(run), result, files, run["result"]["master_name"], built=date.today().isoformat(), timing=timing, progress=progress)
 
 
 def _clock():
@@ -139,7 +143,9 @@ def _clock():
     return datetime.now(timezone.utc), time.perf_counter()
 
 
-def _finish(run, result, files, master_name, built, timing):
+def _finish(run, result, files, master_name, built, timing, progress=None):
+    if progress:
+        progress(0.94, "Making the run report (PDF) ...")
     result.update(master_name=master_name, created=run.get("result", {}).get("created") or date.today().isoformat(), rebuilt=built)
     checks, diffs = check_lines(result)
     buf = io.BytesIO()
@@ -148,6 +154,8 @@ def _finish(run, result, files, master_name, built, timing):
                validation_csv=validation.report_csv(result["validation"]["issues"]))
     started, t0 = timing                                # finished = after the files, the report and the validation CSV exist
     result.update(started=started.isoformat(), finished=datetime.now(timezone.utc).isoformat(), seconds=round(time.perf_counter() - t0, 2))
+    if progress:
+        progress(1.0, "Done")
     return run
 
 

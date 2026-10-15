@@ -845,8 +845,9 @@ class _Collect(logging.Handler):
     def emit(self, record):
         self.items.append(record.getMessage())
 
-def process(master, template, packing, date_txt, outdir, consignees=None, hide_comp=None, merge=True, marks=None):
-    """Build every invoice (+ packing list) and the combined workbook. Returns a JSON-friendly result dict."""
+def process(master, template, packing, date_txt, outdir, consignees=None, hide_comp=None, merge=True, marks=None, progress=None):
+    """Build every invoice (+ packing list) and the combined workbook. Returns a JSON-friendly result dict.
+    progress(fraction 0..1, text) is called after every invoice and every saved file (the page shows it while the build runs)."""
     import os, zipfile
     os.makedirs(outdir, exist_ok=True)
     pack, crd = read_packing(packing)
@@ -865,6 +866,12 @@ def process(master, template, packing, date_txt, outdir, consignees=None, hide_c
         multi = len({n.split("-")[0] for n in invs}) > 1
         fam_wb = {}                                   # base invoice -> ONE workbook holding INV.BKK, INV, PL, INV-1, PL-1 ...
         fams = family_map(invs)
+        steps = len(invs) + len(fams) + 1                 # invoices built + family files saved + the combined workbook
+        done = [0]
+        def say(text):
+            done[0] += 1
+            if progress:
+                progress(min(done[0] / steps, 1.0), text)
         for no, inv in invs.items():
             h.items.clear()
             base = no.split("-")[0]
@@ -889,16 +896,19 @@ def process(master, template, packing, date_txt, outdir, consignees=None, hide_c
                 gw=float(r2(inv["gw"])) if inv["gw"] is not None else None,
                 consignee_ok=find_consignee(consignees, country, sorted(map(str, inv["cus"]))[0]) is not None,
                 warnings=warns, groups=describe(no, inv, pack, hide_comp)))
+            say(f"Built invoice {no} ({len(res)} of {len(invs)})")
         for base, fwb in fam_wb.items():              # one file per invoice family: SC260460.xlsx = SC260460, -1, -2 ...
             del fwb["__tpl"]; fwb.active = 0
             cut_rows(fwb)
             fwb.save(os.path.join(outdir, f"{base}.xlsx"))
             files.append(f"{base}.xlsx")
+            say(f"Saved {base}.xlsx ({len(files)} of {len(fam_wb)} files)")
         del wb_all["__tpl"]; wb_all.active = 0
         cut_rows(wb_all)
         first = next(iter(invs)).split("-")[0]
         combined = f"{first}_INV-PL.xlsx"
         wb_all.save(os.path.join(outdir, combined))
+        say("Saved the combined workbook")
         zip_name = f"{first}_all_invoices.zip"
         with zipfile.ZipFile(os.path.join(outdir, zip_name), "w", zipfile.ZIP_DEFLATED) as z:
             for f in files + [combined]:

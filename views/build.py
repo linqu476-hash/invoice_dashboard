@@ -1,5 +1,6 @@
 """Master invoice -> commercial invoices + packing lists, with the result view."""
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -11,6 +12,32 @@ from invoicing import engine
 st.title("Build invoices")
 st.caption("Upload MASTER_INVOICE.xlsx (make it on **Packing plan to master**). Each carton after the first one of an invoice becomes "
            "SC260458-1, -2, ... The invoice date is the CRD of the packing plan (master column INV DATE).")
+
+
+# ------------------------------------------------------------------ live progress while a build runs
+def _with_progress(label, work):
+    """Run work(on_progress) inside a status box that shows, while it runs: the start time, a progress bar with the current step
+    (invoice n of N, saving files ...), the elapsed time and a rough time left. Returns what work returns; errors are re-raised."""
+    t0 = time.perf_counter()
+    started = _local(datetime.now(timezone.utc).isoformat())
+    with st.status(label, expanded=True) as box:
+        st.write(f"**Started:** {started}")
+        bar = st.progress(0.0, text="Starting ...")
+        info = st.empty()
+
+        def on_progress(fraction, text):
+            elapsed = time.perf_counter() - t0
+            bar.progress(max(0.0, min(float(fraction), 1.0)), text=f"{text}  ({fraction * 100:.0f}%)")
+            left = f" · about {_duration(elapsed * (1 - fraction) / fraction)} left" if fraction >= 0.15 else ""
+            info.caption(f"Elapsed {_duration(elapsed)}{left}")
+
+        try:
+            out = work(on_progress)
+        except Exception:
+            box.update(label="Build stopped", state="error", expanded=True)
+            raise
+        box.update(label=f"Finished in {_duration(time.perf_counter() - t0)}", state="complete", expanded=False)
+    return out
 
 
 # ------------------------------------------------------------------ result view
@@ -32,12 +59,12 @@ def _duration(seconds):
 
 
 def _rebuild(run):
-    with st.spinner("Building the invoices again with the consignees saved now (this can take a minute) ..."):
-        try:
-            st.session_state["run"] = runner.rebuild(run)
-        except Exception as e:
-            st.error(f"Could not build the invoices again: {e}")
-            return
+    try:
+        st.session_state["run"] = _with_progress("Building the invoices again with the consignees saved now ...",
+                                                 lambda on_progress: runner.rebuild(run, progress=on_progress))
+    except Exception as e:
+        st.error(f"Could not build the invoices again: {e}")
+        return
     st.rerun()
 
 
@@ -183,8 +210,9 @@ if st.button("Build invoices", type="primary", disabled=(up is None and not hand
     st.session_state.pop("run", None)                       # a failed build must not leave the previous result on screen
     data, name = (up.getvalue(), up.name) if up else (handoff["data"], handoff["source"])
     try:
-        with st.spinner("Checking the master and building the invoices (this can take a minute) ..."):
-            st.session_state["run"] = runner.build_invoices(data, name, tpl.getvalue() if tpl else None, merge, hide_content)
+        tpl_bytes = tpl.getvalue() if tpl else None
+        st.session_state["run"] = _with_progress("Building the invoices ...",
+                                                 lambda on_progress: runner.build_invoices(data, name, tpl_bytes, merge, hide_content, progress=on_progress))
     except runner.InvalidMaster as e:                       # nothing was generated: every problem with its row
         st.error("Could not build the invoices: the master workbook has problems. Fix them and upload it again.")
         for p in e.problems:
