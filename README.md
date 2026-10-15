@@ -1,7 +1,10 @@
-# Invoice dashboard (Streamlit)
+# Invoice dashboard (Streamlit) · version 2
 
 Packing plan → `MASTER_INVOICE.xlsx` → commercial invoices + packing lists, with the same rules as the Django version.
 The invoice logic is the **unchanged `invoicing/` package**; this project replaces the Django layer (views, templates, models, auth) with Streamlit pages.
+
+**Version 2** brings a new dashboard look (see `CHANGELOG.md`). The look lives in two places only: the `[theme]` part of `.streamlit/config.toml`
+(colours) and `app_core/theme.py` (cards and layout). To change the brand colour, edit `primaryColor` there and `BLUE` in `theme.py`.
 
 ## Run it locally
 
@@ -89,7 +92,9 @@ The smoke test checks that the pages handle real built data; it cannot check Str
 
 ## Layout
 
-    streamlit_app.py     entry point: password gate, navigation
+    streamlit_app.py     entry point: theme, password gate, grouped navigation
+    app_core/theme.py    version 2 colours, CSS and card helpers
+    views/home.py        dashboard (home page)
     views/               build.py  master.py  consignees.py  marks.py  data.py
     app_core/            store.py (SQLite)  runner.py (build + checks)  uploads.py  auth.py  ui.py
     invoicing/           the invoice logic, unchanged from the Django project

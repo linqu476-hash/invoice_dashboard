@@ -2,10 +2,10 @@
 import pandas as pd
 import streamlit as st
 
-from app_core import runner, store, uploads
+from app_core import runner, store, uploads, theme
 from app_core.ui import apply_reset, flash, reset_choice, show_flash
 
-st.title("Consignees")
+theme.page_header("Consignees", "🏢")
 st.caption("One entry per **customer number** (e.g. 400447). An invoice gets a consignee only when its CUS NO is the same as the customer number "
            "of the entry (000035 = 35 = 35.0); the country of the address does not matter. **United Kingdom** keeps the consignee address of the "
            "Excel template when it has no entry of its own. Without a match the invoice shows the yellow placeholder.")

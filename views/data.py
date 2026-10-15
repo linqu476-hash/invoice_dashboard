@@ -3,9 +3,9 @@ import json
 
 import streamlit as st
 
-from app_core import security, store
+from app_core import security, store, theme
 
-st.title("Backup and data")
+theme.page_header("Backup and data", "💾")
 st.caption("Consignees and shipping marks are the only data this app keeps. Uploaded workbooks and built invoices are held in your browser "
            "session only and are gone when you sign out or close the tab.")
 

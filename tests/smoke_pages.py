@@ -84,7 +84,7 @@ if __name__ == "__main__":
 
     # synthetic-free: uses the shipped template + a master built from whatever packing plan is given on the command line
     plan = sys.argv[1] if len(sys.argv) > 1 else None
-    pages = ["build.py", "master.py", "consignees.py", "marks.py", "data.py"]
+    pages = ["home.py", "build.py", "master.py", "consignees.py", "marks.py", "data.py"]
     for p in pages:
         f = run_page(p)
         print(f"idle  {p:15s} ok  (frames={len(f.frames)})")
@@ -93,6 +93,6 @@ if __name__ == "__main__":
         run = runner.build_invoices(m["master"], "MASTER_INVOICE.xlsx")
         store.save_consignee("12345", "Acme", "1 Road\nTown")
         store.save_mark("12345", "ACME\nTOWN")
-        for p, st in [("build.py", dict(run=run)), ("master.py", dict(master_run=m)), ("consignees.py", dict(run=run)), ("marks.py", {})]:
+        for p, st in [("home.py", dict(run=run)), ("build.py", dict(run=run)), ("master.py", dict(master_run=m)), ("consignees.py", dict(run=run)), ("marks.py", {})]:
             f = run_page(p, st)
             print(f"data  {p:15s} ok  (frames={len(f.frames)}, rows={sum(len(x) for x in f.frames)}, notes={len(f.messages)})")

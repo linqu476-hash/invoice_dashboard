@@ -6,10 +6,10 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
-from app_core import runner
+from app_core import runner, theme
 from invoicing import engine
 
-st.title("Build invoices")
+theme.page_header("Build invoices", "🧾")
 st.caption("Upload MASTER_INVOICE.xlsx (make it on **Packing plan to master**). Each carton after the first one of an invoice becomes "
            "SC260458-1, -2, ... The invoice date is the CRD of the packing plan (master column INV DATE).")
 

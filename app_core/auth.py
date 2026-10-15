@@ -15,7 +15,7 @@ import time
 
 import streamlit as st
 
-from . import authlib, security
+from . import authlib, security, theme
 
 
 def _setting(name, default=None):
@@ -64,16 +64,23 @@ def require_login():
         st.session_state.clear()           # drops the uploaded files and built invoices held in this session
         st.session_state["auth_notice"] = "You were signed out because the session was idle too long." if reason == "idle" \
             else "You were signed out because the session reached its maximum length."
-    st.title("🧾 Invoice dashboard")
+    theme.login_header()
+    _, mid, _ = st.columns([1, 1.3, 1])          # a centred sign-in card
+    with mid:
+        _login_form(expected)
+    st.stop()
+
+
+def _login_form(expected):
     if st.session_state.get("auth_notice"):
         st.info(st.session_state.pop("auth_notice"))
     left = authlib.seconds_locked()
     if left:
         st.error(f"Too many wrong passwords. Sign-in is locked for {left} more seconds, then try again.")
-        st.stop()
+        return
     with st.form("login"):
         pw = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Sign in")
+        submitted = st.form_submit_button("Sign in", use_container_width=True)
     if submitted:
         if authlib.seconds_locked():
             st.rerun()
@@ -88,7 +95,6 @@ def require_login():
             st.error(f"Too many wrong passwords. Sign-in is locked for {lock} seconds.")
         else:
             st.error("Wrong password.")
-    st.stop()
 
 
 def sign_out_button():

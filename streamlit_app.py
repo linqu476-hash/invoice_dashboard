@@ -1,13 +1,14 @@
-"""Invoice dashboard, Streamlit version.   Run:  streamlit run streamlit_app.py
+"""Invoice dashboard, Streamlit version 2.   Run:  streamlit run streamlit_app.py
 
 Packing plan -> MASTER_INVOICE.xlsx -> commercial invoices + packing lists. The invoice logic is the unchanged `invoicing/` package of the
-Django version; this file only provides the pages, the password gate and the navigation."""
+Django version; this file only provides the pages, the password gate and the navigation. The look is in app_core/theme.py."""
 import streamlit as st
 
-st.set_page_config(page_title="Invoice dashboard", page_icon="🧾", layout="wide")
+st.set_page_config(page_title="Invoice dashboard", page_icon="🧾", layout="wide", initial_sidebar_state="expanded")
 
-from app_core import auth, store  # noqa: E402  (after set_page_config)
+from app_core import auth, store, theme  # noqa: E402  (after set_page_config)
 
+theme.inject()
 auth.require_login()
 
 
@@ -19,13 +20,15 @@ def _seed_once():
 
 _seed_once()
 
-pages = [
-    st.Page("views/build.py", title="Build invoices", icon="🧾", default=True),
-    st.Page("views/master.py", title="Packing plan to master", icon="📦"),
-    st.Page("views/consignees.py", title="Consignees", icon="🏢"),
-    st.Page("views/marks.py", title="Shipping marks", icon="🏷️"),
-    st.Page("views/data.py", title="Backup and data", icon="💾"),
-]
+pages = {
+    "Overview": [st.Page("views/home.py", title="Dashboard", icon="🏠", default=True)],
+    "Invoicing": [st.Page("views/master.py", title="Packing plan to master", icon="📦"),
+                  st.Page("views/build.py", title="Build invoices", icon="🧾")],
+    "Master data": [st.Page("views/consignees.py", title="Consignees", icon="🏢"),
+                    st.Page("views/marks.py", title="Shipping marks", icon="🏷️")],
+    "System": [st.Page("views/data.py", title="Backup and data", icon="💾")],
+}
 page = st.navigation(pages)
 auth.sign_out_button()
+theme.version_label()
 page.run()

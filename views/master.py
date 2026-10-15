@@ -2,12 +2,12 @@
 import pandas as pd
 import streamlit as st
 
-from app_core import runner
+from app_core import runner, theme
 from invoicing import extract
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-st.title("Packing plan to master")
+theme.page_header("Packing plan to master", "📦")
 tab_master, tab_transform = st.tabs(["Build master invoice", "Transform column names"])
 
 # ------------------------------------------------------------------ build the master

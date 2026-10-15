@@ -2,11 +2,11 @@
 import pandas as pd
 import streamlit as st
 
-from app_core import store
+from app_core import store, theme
 from app_core.ui import apply_reset, flash, reset_choice, show_flash
 from invoicing import shipmarks
 
-st.title("Shipping marks")
+theme.page_header("Shipping marks", "🏷️")
 st.caption("The marks of a customer number are printed on every invoice whose CUS NO matches (INV, PL and INV.BKK). A customer number without "
            "marks gets a yellow placeholder and a warning.")
 

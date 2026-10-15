@@ -11,5 +11,17 @@ toolbarMode = "viewer"      # hides the developer menu
 [browser]
 gatherUsageStats = false
 
+# Version 2 palette: navy + blue on a light grey-blue canvas, white cards (see app_core/theme.py for the card styles)
 [theme]
-primaryColor = "#2748D8"
+primaryColor = "#2563EB"
+backgroundColor = "#F4F6FA"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#0F172A"
+font = "sans serif"
+baseRadius = "large"
+
+[theme.sidebar]
+backgroundColor = "#0B1F3A"
+secondaryBackgroundColor = "#12305A"
+textColor = "#E6EDF7"
+primaryColor = "#38BDF8"
