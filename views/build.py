@@ -1,4 +1,7 @@
 """Master invoice -> commercial invoices + packing lists, with the result view."""
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 import streamlit as st
 
@@ -11,6 +14,23 @@ st.caption("Upload MASTER_INVOICE.xlsx (make it on **Packing plan to master**). 
 
 
 # ------------------------------------------------------------------ result view
+def _local(iso):
+    """A stored UTC time as 'YYYY-MM-DD HH:MM:SS <zone>' in the browser's time zone (UTC when the browser's zone is not known)."""
+    dt = datetime.fromisoformat(iso)
+    try:
+        tz = getattr(st.context, "timezone", None)
+        if tz:
+            dt = dt.astimezone(ZoneInfo(tz))
+    except Exception:
+        pass
+    return f"{dt:%Y-%m-%d %H:%M:%S} {dt.tzname() or ''}".strip()
+
+
+def _duration(seconds):
+    m, s = divmod(float(seconds), 60)
+    return f"{int(m)} min {s:04.1f} s" if m >= 1 else f"{s:.1f} s"
+
+
 def _rebuild(run):
     with st.spinner("Building the invoices again with the consignees saved now (this can take a minute) ..."):
         try:
@@ -33,6 +53,15 @@ def show_run(run):
     for col, (label, value) in zip(cols, [("Invoices", f"{t['invoices']:,}"), ("PO lines", f"{t['po_lines']:,}"), ("Pieces", f"{t['qty']:,}"),
                                           ("Amount (USD)", f"{t['amount']:,.2f}"), ("Countries", t["countries"]), ("Warnings", t["warnings"])]):
         col.metric(label, value)
+    sc = runner.status_counts(r)
+    s1, s2 = st.columns(2)
+    s1.metric("Ready to send", f"{sc['ok']:,} of {sc['total']:,}", help="No warning, line count inside the limit, consignee on file.")
+    s2.metric("Pending (need checking)", f"{sc['pending']:,}", help="Open the 'Check before sending' list below; the invoice list can be filtered with Show = Needs checking.")
+    st.progress(sc["ok"] / sc["total"] if sc["total"] else 0.0, text=f"{sc['ok']} ready, {sc['pending']} pending")
+    if sc["pending"]:
+        why = [f"{n} {label}" for n, label in ((sc["missing_consignee"], "consignee missing"), (sc["line_limit"], "near / over the line limit"),
+                                              (sc["warnings"], "with warnings")) if n]
+        st.caption("Pending because of: " + ", ".join(why) + " (one invoice can be in more than one group).")
     if r.get("merge", True):
         saved = r["master_invoices"] - t["invoices"]
         st.write(f"**{r['master_invoices']} cartons became {t['invoices']} invoice{'s' if t['invoices'] != 1 else ''}**"
@@ -40,6 +69,11 @@ def show_run(run):
     else:
         st.write("Merging was off: each carton of the master is its own invoice.")
     st.caption(f"Invoice date: {r['date']}")
+    if r.get("started") and r.get("finished"):
+        t1, t2, t3 = st.columns(3)
+        t1.metric("Build started", _local(r["started"]))
+        t2.metric("Build finished", _local(r["finished"]))
+        t3.metric("Duration", _duration(r["seconds"]))
 
     # downloads
     st.markdown("#### Downloads")
@@ -87,7 +121,7 @@ def show_run(run):
     rows = []
     for i in r["invoices"]:
         g = runner.gauge(i.get("lines"), i["limit"])
-        needs = bool(i["warnings"]) or g != "ok" or not i.get("consignee_ok", True)
+        needs = runner.needs_check(i)
         if view == "Needs checking" and not needs:
             continue
         if view == "Merged only" and i["cartons"] <= 1:

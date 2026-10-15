@@ -5,9 +5,10 @@ Files live in a temporary folder only while a build runs; results come back as b
 import io
 import re
 import tempfile
+import time
 import uuid
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import openpyxl
@@ -117,27 +118,36 @@ def _build(master_bytes, template_bytes, merge, hide_content):
 def build_invoices(master_bytes, master_name, template_bytes=None, merge=True, hide_content=False):
     """Validate the master, build every invoice. Returns the 'run' dict kept in the session:
     result (engine output + validation), files {name: bytes}, report_pdf (bytes), validation_csv (text), and what is needed to build again."""
+    timing = _clock()
     _check_size(master_name, master_bytes)
     if template_bytes:
         _check_size("template", template_bytes)
     result, files, rep = _build(master_bytes, template_bytes, merge, hide_content)
     return _finish(dict(master_bytes=master_bytes, template_bytes=template_bytes, merge=merge, hide_content=hide_content,
-                        run_id=uuid.uuid4().hex), result, files, master_name, built=None)
+                        run_id=uuid.uuid4().hex), result, files, master_name, built=None, timing=timing)
 
 
 def rebuild(run):
     """Build the invoices of a finished run again with the consignees / shipping marks saved NOW."""
+    timing = _clock()
     result, files, _ = _build(run["master_bytes"], run["template_bytes"], run["merge"], run["hide_content"])
-    return _finish(dict(run), result, files, run["result"]["master_name"], built=date.today().isoformat())
+    return _finish(dict(run), result, files, run["result"]["master_name"], built=date.today().isoformat(), timing=timing)
 
 
-def _finish(run, result, files, master_name, built):
+def _clock():
+    """Start of a build: (UTC time, monotonic clock). The page shows the time in the browser's time zone."""
+    return datetime.now(timezone.utc), time.perf_counter()
+
+
+def _finish(run, result, files, master_name, built, timing):
     result.update(master_name=master_name, created=run.get("result", {}).get("created") or date.today().isoformat(), rebuilt=built)
     checks, diffs = check_lines(result)
     buf = io.BytesIO()
     report_pdf.build(result, run["run_id"], buf, check_lines=checks, diff_lines=diffs)
     run.update(result=result, files=files, report_pdf=buf.getvalue(),
                validation_csv=validation.report_csv(result["validation"]["issues"]))
+    started, t0 = timing                                # finished = after the files, the report and the validation CSV exist
+    result.update(started=started.isoformat(), finished=datetime.now(timezone.utc).isoformat(), seconds=round(time.perf_counter() - t0, 2))
     return run
 
 
@@ -164,3 +174,18 @@ def fixable(result):
 
 def gauge(lines, limit):
     return report_pdf.gauge_state(lines or 0, limit)
+
+
+def needs_check(inv):
+    """An invoice is PENDING (not ready to send) when it has a warning, is near / over its line limit, or printed the consignee placeholder."""
+    return bool(inv["warnings"]) or gauge(inv.get("lines"), inv["limit"]) != "ok" or not inv.get("consignee_ok", True)
+
+
+def status_counts(result):
+    """Dashboard numbers of a finished run: invoices ready to send (success) and pending, with the reasons of the pending ones."""
+    invs = result["invoices"]
+    pending = sum(1 for i in invs if needs_check(i))
+    return dict(total=len(invs), ok=len(invs) - pending, pending=pending,
+                missing_consignee=sum(1 for i in invs if not i.get("consignee_ok", True)),
+                line_limit=sum(1 for i in invs if gauge(i.get("lines"), i["limit"]) != "ok"),
+                warnings=sum(1 for i in invs if i["warnings"]))
