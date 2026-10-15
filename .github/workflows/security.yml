@@ -26,6 +26,6 @@ jobs:
       - name: Static security scan of the code
         run: bandit -r app_core views invoicing scripts -ll -q
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
