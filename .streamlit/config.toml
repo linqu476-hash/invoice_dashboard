@@ -1,0 +1,9 @@
+[server]
+maxUploadSize = 50          # MB; the invoice rules themselves cap one workbook at 20 MB
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#2748D8"
