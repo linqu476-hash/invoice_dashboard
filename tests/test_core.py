@@ -164,5 +164,42 @@ class PipelineTests(unittest.TestCase):
             runner.build_invoices(b"x" * (runner.MAX_BYTES + 1), "huge.xlsx")
 
 
+class FastMergeTests(unittest.TestCase):
+    """engine._merge / _unmerge / _copy_sheet only skip work: the sheet must be the same as with the openpyxl methods
+    (this also catches an openpyxl upgrade that changes the internals they rely on)."""
+
+    @staticmethod
+    def _state(ws):
+        cells = []
+        for (r, c), x in sorted(ws._cells.items()):
+            b = x.border
+            cells.append((r, c, type(x).__name__, x.value, b.left.style, b.right.style, b.top.style, b.bottom.style, x.protection.locked))
+        return cells, sorted(str(m) for m in ws.merged_cells.ranges)
+
+    def test_same_sheet_as_openpyxl(self):
+        from invoicing import engine
+        slow, fast = (openpyxl.load_workbook(engine_template()) for _ in range(2))
+        s_ws = slow.copy_worksheet(slow.active)
+        f_ws = engine._copy_sheet(fast, fast.active)
+        self.assertEqual(self._state(s_ws), self._state(f_ws))
+        for ws, fast_mode in ((s_ws, False), (f_ws, True)):
+            old = [m for m in ws.merged_cells.ranges if m.min_row >= 25]
+            if fast_mode:
+                engine._unmerge(ws, old)
+                engine._merge(ws, 30, 30, 3, 18)
+                engine._merge(ws, 31, 33, 3, 10)
+            else:
+                for m in old:
+                    ws.unmerge_cells(str(m))
+                ws.merge_cells(start_row=30, end_row=30, start_column=3, end_column=18)
+                ws.merge_cells(start_row=31, end_row=33, start_column=3, end_column=10)
+        self.assertEqual(self._state(s_ws), self._state(f_ws))
+
+
+def engine_template():
+    from app_core.runner import TEMPLATE_XLSX
+    return TEMPLATE_XLSX
+
+
 if __name__ == "__main__":
     unittest.main()

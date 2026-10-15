@@ -19,9 +19,113 @@ from collections import OrderedDict
 from decimal import Decimal, ROUND_HALF_UP
 import openpyxl
 from openpyxl.styles import PatternFill, Alignment, Border, Side
+from openpyxl.cell.cell import MergedCell
+from openpyxl.styles.cell_style import StyleArray
+from openpyxl.worksheet.cell_range import CellRange, MultiCellRange
+from openpyxl.worksheet.copier import WorksheetCopy
+from openpyxl.worksheet.merge import MergedCellRange
 
 log = logging.getLogger("inv")
 YELLOW = PatternFill("solid", fgColor="FFFF00")
+
+
+# ---------------------------------------------------------------- fast merge / unmerge / copy of sheets
+# The invoice template has ~260 merged ranges per sheet and every invoice is built from it twice (own file + combined workbook), so
+# merging dominated the build time. openpyxl's ws.merge_cells() / unmerge_cells() / copy_worksheet() are correct but slow here because
+#   * every call first scans ALL existing ranges ("is it already merged / covered?")        -> O(n^2) per sheet
+#   * every call re-adds the same few Border / Protection objects to the workbook style tables (hash + compare of the objects).
+# The functions below do what openpyxl does (same MergedCellRange, same MergedCell objects, same border formatting) but skip the
+# scan, and remember the result of each border addition as a plain style-table index, so the same combination is computed once per
+# workbook. The output was compared cell by cell (values, styles, merges, row heights) with the openpyxl methods.
+def _st(cell):
+    """The cell's StyleArray (a MergedCell / empty cell has none until a style is set)."""
+    if cell._style is None:
+        cell._style = StyleArray()
+    return cell._style
+
+
+def _cache(ws):
+    wb = ws.parent
+    c = getattr(wb, "_inv_border_cache", None)
+    if c is None:
+        c = wb._inv_border_cache = {}
+    return c
+
+
+def _new_range(ws, r1, r2, c1, c2):
+    """MergedCellRange(ws, coord) without the coordinate parsing; the top-left cell takes the bottom / right border of the bottom-right cell."""
+    mcr = MergedCellRange.__new__(MergedCellRange)
+    mcr.ws = ws
+    CellRange.__init__(mcr, min_col=c1, min_row=r1, max_col=c2, max_row=r2)
+    start = ws._cells.get((r1, c1))
+    if start is None:
+        start = ws.cell(row=r1, column=c1)
+    mcr.start_cell = start
+    end = ws._cells.get((r2, c2))
+    if end is not None:
+        key = ("end", _st(start).borderId, _st(end).borderId)
+        cache = _cache(ws)
+        bid = cache.get(key)
+        if bid is None:
+            start.border += Border(right=end.border.right, bottom=end.border.bottom)
+            cache[key] = _st(start).borderId
+        else:
+            _st(start).borderId = bid
+    return mcr
+
+
+def _merge(ws, r1, r2, c1, c2):
+    """ws.merge_cells(start_row=r1, end_row=r2, start_column=c1, end_column=c2)"""
+    mcr = _new_range(ws, r1, r2, c1, c2)
+    ws.merged_cells.ranges.add(mcr)
+    cells, start, cache = ws._cells, mcr.start_cell, _cache(ws)
+    for row in range(r1, r2 + 1):                      # every cell but the top-left one becomes a fresh MergedCell
+        for col in range(c1, c2 + 1):
+            if row != r1 or col != c1:
+                cells[(row, col)] = MergedCell(ws, row, col)
+    for name in ("top", "left", "right", "bottom"):    # the edge cells get their border from the top-left cell
+        for coord in getattr(mcr, name):
+            cell = cells.get(coord)
+            if cell is None:
+                cell = cells[coord] = MergedCell(ws, row=coord[0], column=coord[1])
+            key = (name, _st(cell).borderId, _st(start).borderId)
+            bid = cache.get(key)
+            if bid is None:
+                side = getattr(start.border, name)
+                if not (side and side.style is None):
+                    cell.border += Border(**{name: side})
+                cache[key] = _st(cell).borderId
+            else:
+                _st(cell).borderId = bid
+    pid = _st(start).protectionId
+    for coord in mcr.cells:
+        _st(cells[coord]).protectionId = pid
+
+
+def _unmerge(ws, ranges):
+    """Unmerge the given ranges of ws (the top-left cell stays, the other cells of each range are dropped)."""
+    for m in ranges:
+        ws.merged_cells.ranges.discard(m)
+        cells = m.cells
+        next(cells)                                    # keep the top-left cell
+        for rc in cells:
+            ws._cells.pop(rc, None)
+
+
+def _copy_sheet(wb, src):
+    """wb.copy_worksheet(src), with the merged ranges copied by _new_range."""
+    dst = wb.create_sheet(f"{src.title} Copy")
+    cp = WorksheetCopy(source_worksheet=src, target_worksheet=dst)
+    cp._copy_cells()
+    cp._copy_dimensions()
+    dst.sheet_format = copy.copy(src.sheet_format)
+    dst.sheet_properties = copy.copy(src.sheet_properties)
+    dst.merged_cells = MultiCellRange({_new_range(m.ws, m.min_row, m.max_row, m.min_col, m.max_col) for m in src.merged_cells.ranges})
+    dst.page_margins = copy.copy(src.page_margins)
+    dst.page_setup = copy.copy(src.page_setup)
+    dst.print_options = copy.copy(src.print_options)
+    return dst
+
 
 # ---------------------------------------------------------------- lookup tables (edit here)
 COUNTRY_LABEL = {"UNITED KINGDOM": "UK"}          # text printed after "VIA THAILAND TO"
@@ -133,8 +237,7 @@ def cut_rows(wb, first=CUT_FROM, n=CUT_ROWS):
     for ws in wb.worksheets:
         merges = [(m.min_row, m.max_row, m.min_col, m.max_col) for m in ws.merged_cells.ranges]
         heights = {k: v.height for k, v in ws.row_dimensions.items() if v.height is not None and k >= first}
-        for m in [m for m in list(ws.merged_cells.ranges) if m.max_row >= first]:
-            ws.unmerge_cells(str(m))
+        _unmerge(ws, [m for m in ws.merged_cells.ranges if m.max_row >= first])
         ws.delete_rows(first, n)
         for k in heights: ws.row_dimensions[k].height = None
         for k, h in heights.items():
@@ -147,7 +250,7 @@ def cut_rows(wb, first=CUT_FROM, n=CUT_ROWS):
             a2 = a - n if a >= first + n else min(a, first)
             b2 = b - n if b >= first + n else first - 1
             if (a2, c) != (b2, d):
-                ws.merge_cells(start_row=a2, end_row=b2, start_column=c, end_column=d)
+                _merge(ws, a2, b2, c, d)
     for ws in wb.worksheets:
         for row in ws.iter_rows():
             for c in row:
@@ -270,19 +373,14 @@ def carton_text(inv):
 
 def widen_carton_row(ws, r):
     """Longer carton text: merge C:J instead of C:G so the text is not cut off."""
-    for rng in (f"C{r}:G{r}", f"I{r}:J{r}"):
-        if rng in {str(m) for m in ws.merged_cells.ranges}:
-            ws.unmerge_cells(rng)
-    ws.merge_cells(start_row=r, end_row=r, start_column=3, end_column=10)
+    _unmerge(ws, [m for m in ws.merged_cells.ranges if m.min_row == m.max_row == r and (m.min_col, m.max_col) in ((3, 7), (9, 10))])
+    _merge(ws, r, r, 3, 10)
 
 def widen_text_row(ws, r):
     """Description / content rows: merge C:R (up to the QUANTITY column) instead of C:J, so a long line
     ('MEN'S LONG SLEEVE T-SHIRT  (HTS.CODE : 6109902000) KNITTED') is shown in full on ONE line."""
-    have = {str(m) for m in ws.merged_cells.ranges}
-    for rng in (f"C{r}:J{r}", f"K{r}:N{r}", f"O{r}:R{r}"):
-        if rng in have:
-            ws.unmerge_cells(rng)
-    ws.merge_cells(start_row=r, end_row=r, start_column=3, end_column=18)
+    _unmerge(ws, [m for m in ws.merged_cells.ranges if m.min_row == m.max_row == r and (m.min_col, m.max_col) in ((3, 10), (11, 14), (15, 18))])
+    _merge(ws, r, r, 3, 18)
 
 def balance_prices(inv_no, rows):
     """Unit prices are rounded to 2 decimals (half up). The rounding difference is added to ANOTHER PO line
@@ -362,7 +460,7 @@ def apply(ws, r, t):
         ws.cell(r, c)._style = copy.copy(t["styles"][c])
     for a, b in t["merges"]:
         if b > a:
-            ws.merge_cells(start_row=r, end_row=r, start_column=a, end_column=b)
+            _merge(ws, r, r, a, b)
     ws.row_dimensions[r].height = t["h"]
 
 def allocate(total, qtys):
@@ -386,7 +484,7 @@ def close_gap(ws, row):
 
 def add_packing_list(wb, ws, inv_no, po_rows, tot, inv, title=None):
     """Copy the invoice sheet and turn the copy into the PACKING LIST (PRICE/USD -> N.W, AMOUNT -> G.W)."""
-    pl = wb.copy_worksheet(ws)
+    pl = _copy_sheet(wb, ws)
     pl.title = title or ("PL-" + inv_no)[:31]
     pl.sheet_view.showGridLines = ws.sheet_view.showGridLines
     if ws.print_area:
@@ -427,7 +525,7 @@ def build(inv_no, inv, template, pack, date_txt, outdir, wb=None, inv_title=None
     shared = wb is not None
     if shared:
         tpl = wb["__tpl"]
-        ws = wb.copy_worksheet(tpl)
+        ws = _copy_sheet(wb, tpl)
         ws.sheet_view.showGridLines = tpl.sheet_view.showGridLines
         if tpl.print_area:
             ws.print_area = tpl.print_area.split("!")[-1].replace("$", "")
@@ -452,13 +550,12 @@ def build(inv_no, inv, template, pack, date_txt, outdir, wb=None, inv_title=None
     foot = [m for m in ws.merged_cells.ranges if m.min_row >= 48]
     foot_h = {k: v.height for k, v in ws.row_dimensions.items() if k >= 48 and v.height}
     fm = [(m.min_row, m.max_row, m.min_col, m.max_col) for m in foot]
-    for m in [m for m in list(ws.merged_cells.ranges) if m.min_row >= 25]:
-        ws.unmerge_cells(str(m))
+    _unmerge(ws, [m for m in ws.merged_cells.ranges if m.min_row >= 25])
     for k in foot_h: ws.row_dimensions[k].height = None
     if shift:
         ws.move_range("A48:Z90", rows=shift)
     for a, b, c, d in fm:
-        ws.merge_cells(start_row=a + shift, end_row=b + shift, start_column=c, end_column=d)
+        _merge(ws, a + shift, b + shift, c, d)
     for k, h in foot_h.items(): ws.row_dimensions[k + shift].height = h
 
     # ---- header block
@@ -542,7 +639,7 @@ def build_bkk(wb, base, fam, pack, date_txt, title="INV.BKK", consignees=None, h
     One block per carton (= per invoice) with its own TOTAL row, then GRAND TOTAL; footer = total N.W. / G.W. / cartons.
     `fam` = list of (invoice_no, inv) in order. The sheet is added to `wb` (which must hold the "__tpl" sheet)."""
     tpl = wb["__tpl"]
-    ws = wb.copy_worksheet(tpl)
+    ws = _copy_sheet(wb, tpl)
     ws.sheet_view.showGridLines = tpl.sheet_view.showGridLines
     if tpl.print_area:
         ws.print_area = tpl.print_area.split("!")[-1].replace("$", "")
@@ -581,13 +678,12 @@ def build_bkk(wb, base, fam, pack, date_txt, title="INV.BKK", consignees=None, h
     foot = [m for m in ws.merged_cells.ranges if m.min_row >= 48]
     foot_h = {k: v.height for k, v in ws.row_dimensions.items() if k >= 48 and v.height}
     fm = [(m.min_row, m.max_row, m.min_col, m.max_col) for m in foot]
-    for m in [m for m in list(ws.merged_cells.ranges) if m.min_row >= 25]:
-        ws.unmerge_cells(str(m))
+    _unmerge(ws, [m for m in ws.merged_cells.ranges if m.min_row >= 25])
     for k in foot_h: ws.row_dimensions[k].height = None
     if shift:
         ws.move_range("A48:Z90", rows=shift)
     for a, b, c, d in fm:
-        ws.merge_cells(start_row=a + shift, end_row=b + shift, start_column=c, end_column=d)
+        _merge(ws, a + shift, b + shift, c, d)
     for k, h in foot_h.items(): ws.row_dimensions[k + shift].height = h
 
     # ---- header block (invoice number = the family number)
