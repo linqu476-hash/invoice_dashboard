@@ -1,4 +1,4 @@
-"""Invoice dashboard, Streamlit version 2.   Run:  streamlit run streamlit_app.py
+"""Invoice dashboard, Streamlit version 3.   Run:  streamlit run streamlit_app.py
 
 Packing plan -> MASTER_INVOICE.xlsx -> commercial invoices + packing lists. The invoice logic is the unchanged `invoicing/` package of the
 Django version; this file only provides the pages, the password gate and the navigation. The look is in app_core/theme.py."""

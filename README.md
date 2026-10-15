@@ -1,9 +1,9 @@
-# Invoice dashboard (Streamlit) · version 2
+# Invoice dashboard (Streamlit) · version 3
 
 Packing plan → `MASTER_INVOICE.xlsx` → commercial invoices + packing lists, with the same rules as the Django version.
 The invoice logic is the **unchanged `invoicing/` package**; this project replaces the Django layer (views, templates, models, auth) with Streamlit pages.
 
-**Version 2** brings a new dashboard look (see `CHANGELOG.md`). The look lives in two places only: the `[theme]` part of `.streamlit/config.toml`
+**Version 3** upgrades the lettering (Inter, Plus Jakarta Sans, JetBrains Mono, self-hosted in `static/fonts`); **version 2** brought the dashboard look (see `CHANGELOG.md`). To change a font, replace the file in `static/fonts` and edit the `[[theme.fontFaces]]` block and the `font` / `headingFont` / `codeFont` lines in `.streamlit/config.toml`. The look lives in two places only: the `[theme]` part of `.streamlit/config.toml`
 (colours) and `app_core/theme.py` (cards and layout). To change the brand colour, edit `primaryColor` there and `BLUE` in `theme.py`.
 
 ## Run it locally

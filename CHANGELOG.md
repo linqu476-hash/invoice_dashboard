@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.0.0
+- New typography. **Inter** for text, tables and forms, **Plus Jakarta Sans** for page titles, headings and big numbers, **JetBrains Mono** for code.
+  Numbers use tabular figures so columns of amounts line up. Tighter heading spacing, clearer small captions and sidebar section labels.
+- Fonts are **self-hosted** (`static/fonts`, SIL Open Font License files included) and declared in `.streamlit/config.toml`: no request goes to
+  Google or any CDN, so the app still works offline and leaks nothing.
+- Colours, layout, invoice rules, stored data and security layers are unchanged from 2.0.
+- Requires Streamlit 1.50 or newer (font settings in the theme).
+
 ## 2.0.0
 - New look: navy and blue palette on a light canvas, white cards with soft shadows, rounded buttons, tabs, uploaders and tables
   (`.streamlit/config.toml` for the theme, `app_core/theme.py` for the card styles).

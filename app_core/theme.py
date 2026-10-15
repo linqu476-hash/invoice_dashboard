@@ -1,4 +1,4 @@
-"""Version 2 look: colours, CSS and small HTML building blocks. Static markup only.
+"""Version 3 look (version 2 palette + new typography): colours, CSS and small HTML building blocks. Static markup only.
 
 Every piece of text that comes from data goes through html.escape, so nothing a user typed (customer names, file names)
 can inject markup into the page. The CSS is a fixed string.
@@ -13,11 +13,25 @@ NAVY, BLUE, SKY, TEAL = "#0B1F3A", "#2563EB", "#38BDF8", "#0EA5A4"
 AMBER, GREEN, RED, INK, MUTED, LINE = "#F59E0B", "#16A34A", "#DC2626", "#0F172A", "#5B6B82", "#E3E8F0"
 TONES = {"blue": BLUE, "teal": TEAL, "amber": AMBER, "green": GREEN, "red": RED, "navy": NAVY}
 
+# Typography (v3). The font files are in static/fonts and declared in .streamlit/config.toml, so the stylesheet only names them.
+FONT_BODY = "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
+FONT_HEAD = "'Plus Jakarta Sans', 'Inter', system-ui, sans-serif"
+
 CSS = f"""
 <style>
+.stApp, .stApp button, .stApp input, .stApp textarea, .stApp select {{ font-family: {FONT_BODY}; font-feature-settings: "cv11", "ss01"; }}
+.stApp {{ font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }}
+h1, h2, h3, h4, h5, .hero h1, .pg-head h1, .login-brand h1, .kpi .k-value, .step .s-title {{ font-family: {FONT_HEAD}; }}
+h2, h3 {{ letter-spacing: -0.015em; font-weight: 700; color: {NAVY}; }}
+[data-testid="stMetricValue"], .kpi .k-value, [data-testid="stDataFrame"] {{ font-variant-numeric: tabular-nums; }}
+code, pre, kbd {{ font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace; font-size: .88em; }}
+[data-testid="stCaptionContainer"] {{ font-size: .86rem; letter-spacing: .005em; }}
+[data-testid="stSidebar"] {{ font-size: .95rem; }}
+[data-testid="stSidebarNav"] a span {{ font-weight: 500; }}
+[data-testid="stSidebarNavSeparator"], [data-testid="stSidebarNav"] [data-testid="stNavSectionHeader"] {{ letter-spacing: .08em; text-transform: uppercase; font-size: .7rem; font-weight: 700; }}
 .block-container {{ padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1280px; }}
-h1 {{ font-weight: 800; letter-spacing: -0.02em; color: {NAVY}; }}
-h4 {{ color: {NAVY}; font-weight: 700; border-left: 4px solid {BLUE}; padding-left: .6rem; margin-top: 1.6rem; }}
+h1 {{ font-weight: 800; letter-spacing: -0.025em; line-height: 1.15; color: {NAVY}; }}
+h4, .stApp h4 {{ color: {NAVY}; font-weight: 700; font-size: 1.25rem; letter-spacing: -0.01em; border-left: 4px solid {BLUE}; padding: .1rem 0 .1rem .7rem; margin-top: 1.6rem; }}
 [data-testid="stMetric"] {{ background: #fff; border: 1px solid {LINE}; border-radius: 14px; padding: 14px 18px;
     box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 6px 16px rgba(15,23,42,.05); }}
 [data-testid="stMetricLabel"] p {{ color: {MUTED}; font-weight: 700; font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; }}

@@ -3,6 +3,7 @@ maxUploadSize = 50          # MB; the invoice rules themselves cap one workbook 
 enableXsrfProtection = true # keep on: protects uploads / downloads against cross-site requests
 enableCORS = true           # keep on: only the app's own origin may talk to the server
 headless = true
+enableStaticServing = true  # serves ./static (the self-hosted fonts); nothing is loaded from Google or any CDN
 
 [client]
 showErrorDetails = "none"   # visitors see a generic message, never a stack trace (details stay in the server log)
@@ -11,13 +12,16 @@ toolbarMode = "viewer"      # hides the developer menu
 [browser]
 gatherUsageStats = false
 
+# Version 3: same palette as 2, new typography (fonts are files in static/fonts, declared in the [[theme.fontFaces]] blocks below)
 # Version 2 palette: navy + blue on a light grey-blue canvas, white cards (see app_core/theme.py for the card styles)
 [theme]
 primaryColor = "#2563EB"
 backgroundColor = "#F4F6FA"
 secondaryBackgroundColor = "#FFFFFF"
 textColor = "#0F172A"
-font = "sans serif"
+font = "Inter"
+headingFont = "Plus Jakarta Sans"
+codeFont = "JetBrains Mono"
 baseRadius = "large"
 
 [theme.sidebar]
@@ -25,3 +29,21 @@ backgroundColor = "#0B1F3A"
 secondaryBackgroundColor = "#12305A"
 textColor = "#E6EDF7"
 primaryColor = "#38BDF8"
+
+[[theme.fontFaces]]
+family = "Inter"
+url = "app/static/fonts/inter-latin-wght-normal.woff2"
+weight = "100 900"
+style = "normal"
+
+[[theme.fontFaces]]
+family = "Plus Jakarta Sans"
+url = "app/static/fonts/plus-jakarta-sans-latin-wght-normal.woff2"
+weight = "200 800"
+style = "normal"
+
+[[theme.fontFaces]]
+family = "JetBrains Mono"
+url = "app/static/fonts/jetbrains-mono-latin-wght-normal.woff2"
+weight = "100 800"
+style = "normal"
