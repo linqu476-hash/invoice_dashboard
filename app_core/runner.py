@@ -7,6 +7,7 @@ import re
 import tempfile
 import time
 import uuid
+import zipfile
 from dataclasses import asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -94,7 +95,7 @@ def check_lines(result):
     return lines + [validation.describe(i) for i in v.get("issues", [])], list(v.get("differences", []))
 
 
-def _build(master_bytes, template_bytes, merge, hide_content, progress=None):
+def _build(master_bytes, template_bytes, merge, hide_content, progress=None, combine=False):
     say = progress or (lambda fraction, text: None)
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -113,28 +114,60 @@ def _build(master_bytes, template_bytes, merge, hide_content, progress=None):
         say(0.06, "Master is valid. Building the invoices ...")
         result = engine.process(master, template, None, None, out, store.consignee_table(),
                                 hide_comp=(True if hide_content else None), merge=merge, marks=store.marks_table(),
-                                progress=lambda fraction, text: say(0.06 + 0.86 * fraction, text))
+                                progress=lambda fraction, text: say(0.06 + 0.86 * fraction, text), combine=combine)
         result["validation"] = _validation_block(rep, result["totals"])
-        files = {p.name: p.read_bytes() for p in sorted(out.iterdir()) if p.is_file()}
+        # Keep only the ZIP in session memory. Every generated XLSX is already inside it;
+        # retaining each workbook separately duplicates potentially hundreds of MB per run.
+        zip_name = result["files"]["zip"]
+        files = {zip_name: (out / zip_name).read_bytes()}
         return result, files, rep
 
 
-def build_invoices(master_bytes, master_name, template_bytes=None, merge=True, hide_content=False, progress=None):
+def output_file_bytes(run, filename):
+    """Extract one generated workbook from the run ZIP on demand.
+
+    This avoids retaining each XLSX twice in Streamlit session state (once standalone and
+    once inside the all-invoices ZIP). Only simple member names are accepted.
+    """
+    if not isinstance(filename, str) or not filename or Path(filename).name != filename or filename in {".", ".."}:
+        raise ValueError("Invalid output filename.")
+    result_files = (run.get("result") or {}).get("files") or {}
+    allowed = set(result_files.get("items") or [])
+    if result_files.get("combined"):
+        allowed.add(result_files["combined"])
+    if filename not in allowed:
+        raise ValueError("That file is not part of this build.")
+    zip_name = result_files.get("zip")
+    archive = (run.get("files") or {}).get(zip_name)
+    if not archive:
+        raise ValueError("The invoice ZIP is not available in this session. Rebuild the invoices.")
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive), "r") as zf:
+            if filename not in zf.namelist():
+                raise ValueError("The requested workbook is missing from the invoice ZIP.")
+            return zf.read(filename)
+    except zipfile.BadZipFile as exc:
+        raise ValueError("The invoice ZIP is damaged. Rebuild the invoices.") from exc
+
+
+def build_invoices(master_bytes, master_name, template_bytes=None, merge=True, hide_content=False, progress=None, combine=False):
     """Validate the master, build every invoice. Returns the 'run' dict kept in the session:
     result (engine output + validation), files {name: bytes}, report_pdf (bytes), validation_csv (text), and what is needed to build again."""
     timing = _clock()
     _check_size(master_name, master_bytes)
     if template_bytes:
         _check_size("template", template_bytes)
-    result, files, rep = _build(master_bytes, template_bytes, merge, hide_content, progress)
+    result, files, rep = _build(master_bytes, template_bytes, merge, hide_content, progress, combine)
     return _finish(dict(master_bytes=master_bytes, template_bytes=template_bytes, merge=merge, hide_content=hide_content,
-                        run_id=uuid.uuid4().hex), result, files, master_name, built=None, timing=timing, progress=progress)
+                        combine=combine, run_id=uuid.uuid4().hex), result, files, master_name, built=None, timing=timing, progress=progress)
 
 
 def rebuild(run, progress=None):
     """Build the invoices of a finished run again with the consignees / shipping marks saved NOW."""
     timing = _clock()
-    result, files, _ = _build(run["master_bytes"], run["template_bytes"], run["merge"], run["hide_content"], progress)
+    # Runs created before the optional-combined setting existed keep their historical behavior.
+    combine = run.get("combine", True)
+    result, files, _ = _build(run["master_bytes"], run["template_bytes"], run["merge"], run["hide_content"], progress, combine)
     return _finish(dict(run), result, files, run["result"]["master_name"], built=date.today().isoformat(), timing=timing, progress=progress)
 
 

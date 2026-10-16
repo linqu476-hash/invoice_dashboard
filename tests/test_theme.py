@@ -1,4 +1,4 @@
-"""Version 3 look: the HTML helpers must escape anything that comes from data.   python -m unittest discover -s tests -v"""
+"""Theme helper tests: HTML helpers escape user-controlled text and use lightweight CSS."""
 import sys
 import unittest
 from pathlib import Path
@@ -26,15 +26,15 @@ class ThemeTests(unittest.TestCase):
         self.assertEqual(theme.CSS.count("{"), theme.CSS.count("}"))
         self.assertNotIn("http", theme.CSS)          # no external resources
 
-    def test_fonts_are_self_hosted_and_declared(self):
+    def test_plain_theme_uses_system_fonts_without_remote_assets(self):
         root = Path(__file__).resolve().parent.parent
         cfg = (root / ".streamlit" / "config.toml").read_text(encoding="utf-8")
-        self.assertIn("enableStaticServing = true", cfg)
+        self.assertIn('font = "sans serif"', cfg)
+        self.assertNotIn("fontFaces", cfg)
         self.assertNotIn("googleapis", cfg + theme.CSS)
-        files = sorted(set(__import__("re").findall(r'url = "app/static/fonts/([^"]+)"', cfg)))
-        self.assertEqual(len(files), 3)
-        for name in files:
-            self.assertTrue((root / "static" / "fonts" / name).is_file(), name)
+        self.assertIn("system-ui", theme.CSS)
+        self.assertNotIn("linear-gradient", theme.CSS)
+        self.assertNotIn("transition: transform", theme.CSS)
 
 
 if __name__ == "__main__":

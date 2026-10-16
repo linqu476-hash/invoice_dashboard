@@ -1,105 +1,65 @@
-# Invoice dashboard (Streamlit) · version 4
+# Invoice Dashboard (Django)
 
-Packing plan → `MASTER_INVOICE.xlsx` → commercial invoices + packing lists, with the same rules as the Django version.
-The invoice logic is the **unchanged `invoicing/` package**; this project replaces the Django layer (views, templates, models, auth) with Streamlit pages.
+Upload the packing plan (or an existing MASTER_INVOICE.xlsx) and get commercial invoices, packing lists, a combined workbook
+(sheets INV, PL, INV-1, PL-1 ...; with several invoice numbers: 'INV SC260458', 'PL SC260458-1' ...) and a zip of everything, plus a summary dashboard.
 
-**Version 4** runs builds in the background (see below): changing page no longer stops a build, and every failure is shown on the Dashboard. **Version 3** upgrades the lettering (Inter, Plus Jakarta Sans, JetBrains Mono, self-hosted in `static/fonts`); **version 2** brought the dashboard look (see `CHANGELOG.md`). To change a font, replace the file in `static/fonts` and edit the `[[theme.fontFaces]]` block and the `font` / `headingFont` / `codeFont` lines in `.streamlit/config.toml`. The look lives in two places only: the `[theme]` part of `.streamlit/config.toml`
-(colours) and `app_core/theme.py` (cards and layout). To change the brand colour, edit `primaryColor` there and `BLUE` in `theme.py`.
+## Run it (Windows or Linux)
 
-## Run it locally
+1. Install Python 3.10 or newer.
+2. Open a terminal in this folder and install the packages:
+   `pip install -r requirements.txt`
+3. Create the database (this also adds the United Kingdom consignee):
+   `python manage.py migrate`
+4. Start the server:
+   `python manage.py runserver`
+5. Open http://127.0.0.1:8000 and upload your file.
+   To try it first, use the files in `sample_data/`.
 
-```bash
-pip install -r requirements.txt
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml     # then set APP_PASSWORD_HASH (see Security)
-streamlit run streamlit_app.py
-```
+## Using it
 
-The app refuses to start without `APP_PASSWORD_HASH` (or `APP_PASSWORD`) (it handles customer addresses and invoice data).
+1. Dashboard page: upload the packing plan. The master invoice is extracted from it first (each carton
+   after the first one of an invoice becomes SC260458-1, -2, ...), then the invoices are generated.
+   "Only these invoices" limits the run, e.g. `SC260458`. If you already have a MASTER_INVOICE.xlsx, upload
+   it as well and it is used as it is. The invoice date is the CRD of the packing plan (master column INV DATE); there is no date field in the UI.
+2. Result page: summary cards, charts, the list of invoices (click one to see its groups and PO lines),
+   the "Check before sending" warnings, and the download buttons.
+3. Consignees page: add the consignee address and shipping marks for every destination country
+   (DENMARK, GERMANY, ...). Until a country is added, its invoice shows yellow placeholders.
 
-## Pages
+## Packing plan -> master (the extract step)
 
-| Page | What it does |
-|---|---|
-| **Build invoices** | Upload `MASTER_INVOICE.xlsx` → validation (stops with every problem + Excel row) → invoices. Result: totals, merge summary, downloads (zip, combined workbook, PDF run report, validation CSV, one workbook per invoice), grouped "Check before sending", searchable invoice list with line gauge, invoice detail, by-country chart, **Update invoices** after adding a missing consignee. |
-| **Packing plan to master** | Packing plan or Pre-sell file → master (Pre-sell is converted automatically), skip list, under-$50 / USA / AIR-CC rules, "Build the invoices from this master →". Second tab: only rename the Pre-sell columns. |
-| **Consignees** | One entry per customer number; add / edit / delete; Shipping Instruction upload (many files or a zip of up to 500); missing-consignee list of the last run. |
-| **Shipping marks** | CONSIGNEE Excel upload (`.xls` / `.xlsx`), add / edit / delete. |
-| **Backup and data** | Download / restore a JSON backup; import consignees and marks from the old Django `db.sqlite3`. |
+- Columns are found by header text (INV.NO., PO Number, Gps Customer Number, COUNTRY, DESCRIPTION, HTS CODE1:,
+  Ordered Quantity, Price Per Unit, Total Adjustments, weight, CARTON WEIGHT, CARTON NO.).
+- A carton ends at the orange total row (CARTON NO. 1, 2, 3 ...) or at the green "1 OF 1" row for a single carton.
+- N.W = sum of quantity x weight of the carton; G.W = N.W + carton weight; AMOUNT = quantity x price + adjustment.
+- It reads the first sheet that has the INV.NO. and PO Number headers. From the command line:
+  `python dashboard/extract.py` is the same code as `packing_to_master.py` (`--sheet`, `--invoices` options).
 
-## Not carried over from the Django version
+## Master columns and one file per invoice family
 
-These need a database of runs and user accounts, which a Streamlit app on an ordinary host does not have:
+- MASTER_INVOICE.xlsx columns: INV NO, **INV DATE**, PO NO, **CUSTOMER PO NO**, **ART NO**, CUS NO, COUNTRY, DESCRIPTION, HTS CODE, AMOUNT, QTY, N.W, G.W.
+  CUSTOMER PO NO comes from the packing plan column `Customer Number`, ART NO from `Article Number`, both per PO line. INV DATE comes from `Customer Request Date (CRD)` and is printed as the invoice DATE.
+  An older master without these two columns still works (values are then looked up in the packing plan by PO number).
+- Invoices are written **one workbook per invoice family**: `SC260460.xlsx` holds SC260460, -1, -2, -3 ... as sheets
+  INV, PL, INV-1, PL-1, INV-2, PL-2 ... (`--combine` / the combined file still holds every invoice).
 
-- **Run history, All runs page, Analytics page, CSV export of runs, `purge_jobs`.** A run now lives in the browser session: download what you need before closing the tab or signing out.
-- **Roles (Operator / Administrator), per-user run ownership, sign-in lockout, audit trail, Django admin.** Replaced by **one shared password** (`APP_PASSWORD`). For real per-user sign-in use Streamlit's `st.login` (OIDC) or put the app behind your company's SSO / reverse proxy.
+## Rules built in (from README.MD)
 
-If you need those, keep the Django app for them; both can share the same `invoicing/` package.
+- Same description + HTS code + composition = one group (tick "Remove content line from the next groups" on the dashboard, or `--no-content`: the first group keeps its composition line, the next groups lose it and groups are description + HTS code only); groups show 4 lines then the PO lines.
+- Invoice file name = invoice number (SC260458, SC260458-1 ...); sheets are INV / PL / INV-1 / PL-1.
+- Packing list: N.W(KGS) and G.W(KGS) per PO line, split by quantity from the master totals,
+  weights rounded to the nearest 0.1 KG (5.39 -> 5.40, 6.43 -> 6.40).
 
-## Security
+## The two scripts (command line and UI)
 
-Three layers, so one failure does not expose customer data.
+- `packing_to_master.py` (step 1) = `dashboard/extract.py` = UI page **Packing plan -> Master** (`/master/`).
+- `generate_invoices.py` (step 2) = `dashboard/engine.py` = UI page **Dashboard** (`/`). With `--packing` and no `--master` it builds the master first.
+- One code base: change `extract.py` or `engine.py` and both the UI and the scripts follow.
 
-**1. Sign-in** (`app_core/auth.py`, `app_core/authlib.py`)
-- Store a **hash**, not the password: run `python scripts/make_password_hash.py` and put the printed `APP_PASSWORD_HASH` line in the secrets. Plain `APP_PASSWORD` still works.
-- After 5 wrong passwords in a row, sign-in is locked for 1 minute, doubling up to 15 minutes. The lock is kept in a file, so refreshing the page or opening another tab does not reset it. It is global (Streamlit does not give the app the visitor's IP), so while someone is guessing, real users wait too.
-- Sessions end after 30 idle minutes or 12 hours (`IDLE_TIMEOUT_MIN`, `MAX_SESSION_HOURS`) and the uploaded files are dropped.
+## Files
 
-**2. Uploads and data in** (`app_core/security.py`)
-- Every upload is checked by its content, not only its extension: real `.xlsx` / `.xls` / SQLite / JSON, size limits, and for zip-based files no zip bombs (entry count, expanded size, compression ratio), no `../` paths, no encrypted entries.
-- Customer text that starts with `=` is stored with a leading quote so it cannot run as a formula in the invoices.
-
-**3. Data at rest, deployment and supply chain**
-- An audit log (`data/audit.log`, next to the database) records sign-ins, failures, lockouts, restores and backups. It never records passwords or file contents.
-- The database, audit log and lockout files are created readable by the app's user only (0600).
-- Streamlit settings hide stack traces from visitors and keep XSRF and CORS protection on.
-- The Docker image runs as a non-root user, has a health check, and never contains secrets or databases (`.dockerignore`).
-- GitHub Actions (`.github/workflows/security.yml`) runs the tests, `pip-audit` (vulnerable dependencies), `bandit` (code scan) and `gitleaks` (secrets in the history) on every push and every week. Dependabot opens update pull requests.
-
-Not covered: per-user accounts and roles, and HTTPS. Serve the app only behind HTTPS (Streamlit Community Cloud, or a reverse proxy such as Caddy / nginx), and use `st.login` or your company SSO if each person needs their own account.
-
-## Deploying
-
-### Where the data lives (read this first)
-Consignees and shipping marks are stored in SQLite at `data/invoice_dashboard.sqlite3` (override with `INVOICE_DB_PATH`).
-**Streamlit Community Cloud wipes local files on every restart or redeploy**, so anything saved in the app is lost there. Choose one:
-
-1. **Host with a persistent disk** (VPS, Render, Railway, Fly.io…): set `INVOICE_DB_PATH` to a path on that disk. A `Dockerfile` is included (not built or tested here).
-2. **Community Cloud + seed file:** download a backup on *Backup and data*, save it as `data/seed.json` in a **private** repository. An empty database is filled from it at start-up. Changes made in the app after that are lost at the next restart unless you download a new backup and commit it.
-
-### Streamlit Community Cloud
-1. Push this folder to a **private** GitHub repository (see "Keep out of git" below).
-2. On share.streamlit.io: *Create app* → pick the repo → main file `streamlit_app.py`.
-3. *Advanced settings → Secrets*: `APP_PASSWORD = "a-long-passphrase"`.
-4. A Community Cloud app URL is reachable by anyone who has it unless you restrict viewers in the app's sharing settings; the password gate is your minimum protection.
-
-### Keep out of git
-`.gitignore` already excludes `.streamlit/secrets.toml`, `data/*.sqlite3` and `data/seed.json`. The old Django archive also held `db.sqlite3` (13 consignees, 17 shipping marks, job history and an audit log) and a `sample_data/` folder of real-looking workbooks: **do not commit those anywhere public.** Migrate the consignees and marks with `python scripts/import_from_django.py path/to/db.sqlite3` (or the Import box on *Backup and data*).
-
-## Good to know
-
-- **Build time.** A packing plan of about 340 PO lines becomes 26 invoices in roughly 35 seconds on a normal laptop; shared hosting can be slower. Profiling shows most of it is openpyxl's `merge_cells` called from `engine.cut_rows` and `engine.apply`, so it is an engine cost, not a Streamlit one, and it is the first place to optimise.
-- **Old masters.** A master without the `INV DATE` column (for example the old `sample_data/MASTER_INVOICE.xlsx`) is refused, exactly as in the Django app; rebuild it on *Packing plan to master*.
-- **Background builds (v4).** *Build invoices* starts a job in a worker thread of the server (`app_core/jobs.py`) instead of running inside the page, because Streamlit stops a page script when the user opens another page. The progress bar shows on the Build page, the Dashboard and in the sidebar; the result, or the reason of a failure (for a bad master, every problem with its row), is reported on the Dashboard and with a pop-up on whatever page you are on. One build at a time per session, at most 2 at once on the server (the others wait), and a build can be cancelled. Limits: jobs live in server memory, so a restart or redeploy ends a running build; a build belongs to the browser session, so signing out cancels it and a new session cannot see it; finished jobs are forgotten after 2 hours and each session keeps its last 10.
-- **Memory.** Uploaded files and built invoices are kept in the session (not on disk) until you sign out or close the tab.
-- **Upload limit.** 50 MB in `.streamlit/config.toml`; one workbook is capped at 20 MB by the validation rules.
-
-## Tests
-
-```bash
-python -m unittest discover -s tests -v          # service layer, synthetic data only (about 2 s)
-python tests/smoke_pages.py [packing_plan.xlsx]  # runs every page script against a fake streamlit module
-```
-The smoke test checks that the pages handle real built data; it cannot check Streamlit's own widgets or layout. Click through the real app once after deploying.
-
-## Layout
-
-    streamlit_app.py     entry point: theme, password gate, grouped navigation
-    app_core/theme.py    version 2 colours, CSS and card helpers
-    views/home.py        dashboard (home page)
-    views/               build.py  master.py  consignees.py  marks.py  data.py
-    app_core/            store.py (SQLite)  runner.py (build + checks)  uploads.py  auth.py  ui.py
-                         jobs.py (background job engine)  jobs_ui.py (progress, failures, sidebar status)
-    invoicing/           the invoice logic, unchanged from the Django project
-    assets/              invoice_template.xlsx
-    scripts/             import_from_django.py
-    tests/
+- `dashboard/extract.py`: packing plan -> MASTER_INVOICE.xlsx.
+- `dashboard/engine.py`: the invoice builder (same logic as generate_invoices.py, also runnable alone).
+- `assets/invoice_template.xlsx`: layout copied for every invoice. Replace it, or upload a template per run.
+- `jobs/`: one folder per upload with the inputs and generated files.
+- Tests: `python manage.py test`

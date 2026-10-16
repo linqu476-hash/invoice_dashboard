@@ -95,3 +95,29 @@ with tab_transform:
                 st.dataframe(pd.DataFrame(tr["modes"]).rename(columns={"mode": "Mode", "invoices": "Invoices", "lines": "Lines", "must_build": "Always built"}), hide_index=True)
             st.markdown("##### Column report")
             st.dataframe(pd.DataFrame(tr["report"]), hide_index=True)
+
+            # Link the converted workbook directly to the master-generation step.
+            # This avoids requiring the user to download and re-upload the converted file.
+            skip_converted = st.text_input(
+                "Invoice skip list (optional)", key="transform_skip_invoices",
+                placeholder="SC260458",
+                help="Skip an invoice and all its carton splits, or specify a split such as SC260458-1.")
+            if st.button("Build MASTER_INVOICE from this converted file →", type="primary", key="build_master_from_converted"):
+                st.session_state.pop("converted_master_run", None)
+                try:
+                    with st.spinner("Building MASTER_INVOICE from PACKING_PLAN_CONVERTED.xlsx ..."):
+                        st.session_state["converted_master_run"] = runner.build_master(
+                            tr["converted"], "PACKING_PLAN_CONVERTED.xlsx", None, skip_converted)
+                except Exception as e:
+                    st.error(f"Could not build the master invoice from the converted packing plan: {e}")
+            cm = st.session_state.get("converted_master_run")
+            if cm:
+                st.success(f"MASTER_INVOICE built from the converted packing plan: {cm['rows']:,} PO lines, "
+                           f"{cm['qty']:,} pieces, ${cm['amount']:,.2f} total.")
+                st.download_button("⬇ MASTER_INVOICE.xlsx", cm["master"], file_name="MASTER_INVOICE.xlsx",
+                                   mime=XLSX, type="primary", key="dl_master_from_converted")
+                if st.button("Build invoices from this master →", key="build_invoices_from_converted_master"):
+                    st.session_state["master_handoff"] = dict(
+                        data=cm["master"], source="MASTER_INVOICE (from PACKING_PLAN_CONVERTED.xlsx)")
+                    st.session_state.pop("run", None)
+                    st.switch_page("views/build.py")

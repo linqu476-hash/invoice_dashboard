@@ -8,8 +8,8 @@ consignees, marks = store.consignees(), store.marks()
 run = st.session_state.get("run")
 dupes = len(store.conflicts("consignee")) + len(store.conflicts("shippingmark"))
 
-theme.hero("Invoice dashboard", "Packing plan → master invoice → commercial invoices and packing lists, in one place.",
-           pills=("🔒 Password protected", "🛡️ Upload checks", "📝 Audit log"))
+st.title("Invoice dashboard")
+st.caption("Packing plan → master invoice → commercial invoices and packing lists.")
 
 # ------------------------------------------------------------------ key numbers
 c1, c2, c3, c4 = st.columns(4)
@@ -34,16 +34,13 @@ else:
 jobs_ui.show_failures("home")
 jobs_ui.live_panel()
 
-# ------------------------------------------------------------------ workflow
-st.markdown("#### How it works")
-steps = [("1", "Packing plan to master", "Upload the packing plan and get MASTER_INVOICE.xlsx.", "views/master.py", "📦"),
-         ("2", "Build invoices", "Upload the master: invoices and packing lists are built and checked.", "views/build.py", "🧾"),
-         ("3", "Consignees", "Keep the consignee address of every customer number.", "views/consignees.py", "🏢"),
-         ("4", "Shipping marks", "Keep the shipping marks printed on each invoice.", "views/marks.py", "🏷️")]
-for col, (n, title, text, page, icon) in zip(st.columns(4), steps):
-    with col:
-        theme.step(n, title, text)
-        st.page_link(page, label=f"Open {title.lower()}" if len(title) < 16 else "Open", icon=icon)
+# ------------------------------------------------------------------ quick links
+st.markdown("#### Quick links")
+q1, q2, q3, q4 = st.columns(4)
+q1.page_link("views/master.py", label="Packing plan → master", icon="📦")
+q2.page_link("views/build.py", label="Build invoices", icon="🧾")
+q3.page_link("views/consignees.py", label="Consignees", icon="🏢")
+q4.page_link("views/marks.py", label="Shipping marks", icon="🏷️")
 
 # ------------------------------------------------------------------ last build
 st.markdown("#### Last build")
@@ -54,19 +51,13 @@ if not run:
 else:
     r = run["result"]
     sc = runner.status_counts(r)
-    left, right = st.columns([1, 1])
-    with left:
+    with st.container():
         st.markdown(f"**{r['master_name']}**")
         s1, s2 = st.columns(2)
         s1.metric("Ready to send", f"{sc['ok']:,} of {sc['total']:,}")
         s2.metric("Need checking", f"{sc['pending']:,}")
         st.progress(sc["ok"] / sc["total"] if sc["total"] else 0.0, text=f"{sc['ok']} ready, {sc['pending']} pending")
         st.page_link("views/build.py", label="Open the result and downloads", icon="🧾")
-    with right:
-        st.caption("Amount by country (USD)")
-        df = pd.DataFrame(r["by_country"])
-        if not df.empty:
-            st.bar_chart(df.set_index("country")["amount"].sort_values(ascending=False).head(8), color="#2563EB", height=240)
 
 if dupes:
     st.warning(f"{dupes} customer number(s) are saved twice, written differently (for example 000035 and 35). Only one can match an invoice.")

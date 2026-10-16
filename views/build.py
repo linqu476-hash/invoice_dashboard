@@ -76,19 +76,22 @@ def show_run(run):
     if r.get("rebuilt"):
         st.caption(f"Built again on {r['rebuilt']} with the consignees saved at that time.")
 
-    cols = st.columns(6)
-    for col, (label, value) in zip(cols, [("Invoices", f"{t['invoices']:,}"), ("PO lines", f"{t['po_lines']:,}"), ("Pieces", f"{t['qty']:,}"),
-                                          ("Amount (USD)", f"{t['amount']:,.2f}"), ("Countries", t["countries"]), ("Warnings", t["warnings"])]):
+    cols = st.columns(3)
+    for col, (label, value) in zip(cols, [("Invoices", f"{t['invoices']:,}"),
+                                          ("Amount (USD)", f"{t['amount']:,.2f}"),
+                                          ("Warnings", f"{t['warnings']:,}")]):
         col.metric(label, value)
-    sc = runner.status_counts(r)
-    s1, s2 = st.columns(2)
-    s1.metric("Ready to send", f"{sc['ok']:,} of {sc['total']:,}", help="No warning, line count inside the limit, consignee on file.")
-    s2.metric("Pending (need checking)", f"{sc['pending']:,}", help="Open the 'Check before sending' list below; the invoice list can be filtered with Show = Needs checking.")
-    st.progress(sc["ok"] / sc["total"] if sc["total"] else 0.0, text=f"{sc['ok']} ready, {sc['pending']} pending")
-    if sc["pending"]:
-        why = [f"{n} {label}" for n, label in ((sc["missing_consignee"], "consignee missing"), (sc["line_limit"], "near / over the line limit"),
-                                              (sc["warnings"], "with warnings")) if n]
-        st.caption("Pending because of: " + ", ".join(why) + " (one invoice can be in more than one group).")
+    # Keep the default results view compact; detailed readiness metrics are available on demand.
+    with st.expander("Readiness summary", expanded=False):
+        sc = runner.status_counts(r)
+        s1, s2 = st.columns(2)
+        s1.metric("Ready to send", f"{sc['ok']:,} of {sc['total']:,}", help="No warning, line count inside the limit, consignee on file.")
+        s2.metric("Pending (need checking)", f"{sc['pending']:,}", help="Use the invoice filter to show invoices that need checking.")
+        st.progress(sc["ok"] / sc["total"] if sc["total"] else 0.0, text=f"{sc['ok']} ready, {sc['pending']} pending")
+        if sc["pending"]:
+            why = [f"{n} {label}" for n, label in ((sc["missing_consignee"], "consignee missing"), (sc["line_limit"], "near / over the line limit"),
+                                                  (sc["warnings"], "with warnings")) if n]
+            st.caption("Pending because of: " + ", ".join(why) + " (one invoice can be in more than one group).")
     if r.get("merge", True):
         saved = r["master_invoices"] - t["invoices"]
         st.write(f"**{r['master_invoices']} cartons became {t['invoices']} invoice{'s' if t['invoices'] != 1 else ''}**"
@@ -96,28 +99,29 @@ def show_run(run):
     else:
         st.write("Merging was off: each carton of the master is its own invoice.")
     st.caption(f"Invoice date: {r['date']}")
-    if r.get("started") and r.get("finished"):
-        t1, t2, t3 = st.columns(3)
-        t1.metric("Build started", _local(r["started"]))
-        t2.metric("Build finished", _local(r["finished"]))
-        t3.metric("Duration", _duration(r["seconds"]))
-
     # downloads
     st.markdown("#### Downloads")
-    d1, d2, d3, d4 = st.columns(4)
-    zip_name, comb_name = r["files"]["zip"], r["files"]["combined"]
-    d1.download_button("⬇ All invoices (zip)", run["files"][zip_name], file_name=zip_name, mime="application/zip",
-                       key=f"dl_zip_{run['run_id']}", type="primary")
-    d2.download_button("⬇ Combined workbook", run["files"][comb_name], file_name=comb_name,
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"dl_comb_{run['run_id']}")
-    d3.download_button("⬇ Run report (PDF)", run["report_pdf"], file_name=f"run_report_{run['run_id'][:8]}.pdf", mime="application/pdf",
-                       key=f"dl_pdf_{run['run_id']}")
-    d4.download_button("⬇ Validation report (CSV)", ("\ufeff" + run["validation_csv"]).encode("utf-8"), file_name="validation.csv",
-                       mime="text/csv", key=f"dl_val_{run['run_id']}")
+    zip_name, comb_name = r["files"]["zip"], r["files"].get("combined")
+    download_cols = st.columns(4 if comb_name else 3)
+    download_cols[0].download_button("All invoices (ZIP)", run["files"][zip_name], file_name=zip_name, mime="application/zip",
+                                     key=f"dl_zip_{run['run_id']}", type="primary")
+    offset = 1
+    if comb_name and comb_name in run["files"]:
+        download_cols[1].download_button("Combined workbook", runner.output_file_bytes(run, comb_name), file_name=comb_name,
+                                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"dl_comb_{run['run_id']}")
+        offset = 2
+    download_cols[offset].download_button("Run report (PDF)", run["report_pdf"], file_name=f"run_report_{run['run_id'][:8]}.pdf", mime="application/pdf",
+                                          key=f"dl_pdf_{run['run_id']}")
+    download_cols[offset + 1].download_button("Validation report (CSV)", ("\ufeff" + run["validation_csv"]).encode("utf-8"), file_name="validation.csv",
+                                              mime="text/csv", key=f"dl_val_{run['run_id']}")
+    if not comb_name:
+        st.caption("Combined workbook was skipped to reduce build time. Enable it under Options if you need it.")
     with st.expander(f"One workbook per invoice ({len(r['files']['items'])})"):
-        for name in r["files"]["items"]:
-            st.download_button(f"⬇ {name}", run["files"][name], file_name=name,
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"dl_{run['run_id']}_{name}")
+        item_names = r["files"]["items"]
+        if item_names:
+            selected_file = st.selectbox("Choose workbook", item_names, key=f"family_file_{run['run_id']}")
+            st.download_button("Download selected workbook", runner.output_file_bytes(run, selected_file), file_name=selected_file,
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"dl_family_{run['run_id']}")
 
     # check before sending
     checks, diffs = runner.check_lines(r)
@@ -145,47 +149,45 @@ def show_run(run):
     f1, f2 = st.columns([1, 2])
     view = f1.selectbox("Show", ["All", "Needs checking", "Merged only"], key="inv_filter")
     q = f2.text_input("Search invoice, country or customer number", key="inv_search").strip().lower()
-    rows = []
+    # Filter compact invoice records first; only format and render the current page.
+    filtered = []
     for i in r["invoices"]:
-        g = runner.gauge(i.get("lines"), i["limit"])
-        needs = runner.needs_check(i)
-        if view == "Needs checking" and not needs:
+        if view == "Needs checking" and not runner.needs_check(i):
             continue
         if view == "Merged only" and i["cartons"] <= 1:
             continue
         if q and q not in f"{i['no']} {i['country']} {i['cus']}".lower():
             continue
+        filtered.append(i)
+
+    page_size = st.selectbox("Rows per page", [50, 100, 250, 500], index=1, key="inv_page_size")
+    page_count = max(1, (len(filtered) + page_size - 1) // page_size)
+    filter_signature = (view, q, page_size)
+    if st.session_state.get("_inv_filter_signature") != filter_signature:
+        st.session_state["_inv_filter_signature"] = filter_signature
+        st.session_state["inv_table_page"] = 1
+    page_number = st.selectbox("Page", list(range(1, page_count + 1)), key="inv_table_page")
+    start = (page_number - 1) * page_size
+    visible = filtered[start:start + page_size]
+    st.caption(f"Showing {len(visible):,} of {len(filtered):,} matching invoices · page {page_number} of {page_count}.")
+
+    rows = []
+    for i in visible:
+        g = runner.gauge(i.get("lines"), i["limit"])
         rows.append({"Invoice": i["no"], "Country": i["country"], "Customer": str(i["cus"]), "Cartons": i["cartons"],
                      "PO lines": i["n_po"], "Groups": i["n_grp"], "Pieces": i["qty"], "Amount (USD)": i["amount"],
                      "N.W": i["nw"], "G.W": i["gw"], "Lines": f"{i.get('lines') or 0} / {i['limit']}",
                      "Gauge": {"ok": "OK", "near": "NEAR LIMIT", "over": "OVER LIMIT"}[g],
                      "Consignee": "yes" if i.get("consignee_ok", True) else "MISSING", "Warnings": len(i["warnings"])})
-    st.caption(f"Line limit: {engine.LINE_LIMIT_KEEP} printed lines for UK / South Africa / Australia, {engine.LINE_LIMIT_OTHER} for every other country.")
     if rows:
         st.dataframe(pd.DataFrame(rows), hide_index=True, column_config={"Amount (USD)": st.column_config.NumberColumn(format="%.2f")})
     else:
         st.info("No invoice matches.")
 
-    # one invoice
-    st.markdown("#### Invoice detail")
-    by_no = {i["no"]: i for i in r["invoices"]}
-    pick = st.selectbox("Invoice", list(by_no), key="inv_detail")
-    inv = by_no[pick]
-    if inv["merged_from"]:
-        st.caption("Merged from master invoices: " + ", ".join(inv["merged_from"]))
-    for w in inv["warnings"]:
-        st.warning(w)
-    for grp in inv["groups"]:
-        st.markdown(f"**{grp['name']}**  ·  HTS {grp['hts']}" + (f"  \n{grp['comp']}" if grp["comp"] else ""))
-        st.dataframe(pd.DataFrame([{"PO": ln["po"], "Customer PO": ln["cus_po"], "Article": ln["art"], "Qty": ln["qty"],
-                                    "Price": ln["price"], "Amount": ln["amount"]} for ln in grp["lines"]]), hide_index=True)
+    # Detailed line-by-line tables were removed from the default UI in v11.
+    # The authoritative invoice workbook remains downloadable; this keeps reruns
+    # lighter for builds with many groups and PO lines.
 
-    # by country
-    st.markdown("#### By country")
-    bc = pd.DataFrame(r["by_country"]).rename(columns={"country": "Country", "invoices": "Invoices", "qty": "Pieces", "amount": "Amount (USD)"})
-    c1, c2 = st.columns([1, 1])
-    c1.dataframe(bc, hide_index=True, column_config={"Amount (USD)": st.column_config.NumberColumn(format="%.2f")})
-    c2.bar_chart(bc.set_index("Country")["Amount (USD)"])
 
 
 # ------------------------------------------------------------------ upload form
@@ -204,6 +206,8 @@ with st.expander("Options"):
                              "Woven and knitted are never combined; invoices with SET lines are never merged.")
     hide_content = st.checkbox("Remove content line from the next groups",
                                help="The first group keeps its composition line, the next groups lose it and groups are description + HTS code only.")
+    combine = st.checkbox("Generate combined workbook (slower; optional)", value=False,
+                          help="Adds a single workbook containing every invoice and packing list. The ZIP always contains the per-invoice family workbooks.")
     tpl = st.file_uploader("Invoice template (optional, default: assets/invoice_template.xlsx)", type=["xlsx"], key="build_template")
 
 if st.button("Build invoices", type="primary", disabled=(up is None and not handoff)):
@@ -212,7 +216,7 @@ if st.button("Build invoices", type="primary", disabled=(up is None and not hand
     try:
         tpl_bytes = tpl.getvalue() if tpl else None
         st.session_state["run"] = _with_progress("Building the invoices ...",
-                                                 lambda on_progress: runner.build_invoices(data, name, tpl_bytes, merge, hide_content, progress=on_progress))
+                                                 lambda on_progress: runner.build_invoices(data, name, tpl_bytes, merge, hide_content, progress=on_progress, combine=combine))
     except runner.InvalidMaster as e:                       # nothing was generated: every problem with its row
         st.error("Could not build the invoices: the master workbook has problems. Fix them and upload it again.")
         for p in e.problems:

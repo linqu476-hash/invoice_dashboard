@@ -13,73 +13,53 @@ NAVY, BLUE, SKY, TEAL = "#0B1F3A", "#2563EB", "#38BDF8", "#0EA5A4"
 AMBER, GREEN, RED, INK, MUTED, LINE = "#F59E0B", "#16A34A", "#DC2626", "#0F172A", "#5B6B82", "#E3E8F0"
 TONES = {"blue": BLUE, "teal": TEAL, "amber": AMBER, "green": GREEN, "red": RED, "navy": NAVY}
 
-# Typography (v3). The font files are in static/fonts and declared in .streamlit/config.toml, so the stylesheet only names them.
-FONT_BODY = "'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
-FONT_HEAD = "'Plus Jakarta Sans', 'Inter', system-ui, sans-serif"
-
 CSS = f"""
 <style>
-.stApp, .stApp button, .stApp input, .stApp textarea, .stApp select {{ font-family: {FONT_BODY}; font-feature-settings: "cv11", "ss01"; }}
-.stApp {{ font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }}
-h1, h2, h3, h4, h5, .hero h1, .pg-head h1, .login-brand h1, .kpi .k-value, .step .s-title {{ font-family: {FONT_HEAD}; }}
-h2, h3 {{ letter-spacing: -0.015em; font-weight: 700; color: {NAVY}; }}
-[data-testid="stMetricValue"], .kpi .k-value, [data-testid="stDataFrame"] {{ font-variant-numeric: tabular-nums; }}
-code, pre, kbd {{ font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace; font-size: .88em; }}
-[data-testid="stCaptionContainer"] {{ font-size: .86rem; letter-spacing: .005em; }}
-[data-testid="stSidebar"] {{ font-size: .95rem; }}
-[data-testid="stSidebarNav"] a span {{ font-weight: 500; }}
-[data-testid="stSidebarNavSeparator"], [data-testid="stSidebarNav"] [data-testid="stNavSectionHeader"] {{ letter-spacing: .08em; text-transform: uppercase; font-size: .7rem; font-weight: 700; }}
-.block-container {{ padding-top: 2.2rem; padding-bottom: 3rem; max-width: 1280px; }}
-h1 {{ font-weight: 800; letter-spacing: -0.025em; line-height: 1.15; color: {NAVY}; }}
-h4, .stApp h4 {{ color: {NAVY}; font-weight: 700; font-size: 1.25rem; letter-spacing: -0.01em; border-left: 4px solid {BLUE}; padding: .1rem 0 .1rem .7rem; margin-top: 1.6rem; }}
-[data-testid="stMetric"] {{ background: #fff; border: 1px solid {LINE}; border-radius: 14px; padding: 14px 18px;
-    box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 6px 16px rgba(15,23,42,.05); }}
-[data-testid="stMetricLabel"] p {{ color: {MUTED}; font-weight: 700; font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; }}
-[data-testid="stMetricValue"] {{ color: {NAVY}; font-weight: 800; }}
+/* Minimal system-font styling: no remote assets, gradients, animations, or heavy shadows. */
+.stApp, .stApp button, .stApp input, .stApp textarea, .stApp select {{
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}}
+.stApp {{ font-size: 15px; line-height: 1.45; }}
+.block-container {{ padding-top: 1.25rem; padding-bottom: 2rem; max-width: 1280px; }}
+h1, h2, h3, h4 {{ color: {NAVY}; }}
+h1 {{ font-size: 1.8rem; font-weight: 700; }}
+h4, .stApp h4 {{ font-size: 1.1rem; font-weight: 650; border-left: 3px solid {BLUE}; padding-left: .55rem; }}
+[data-testid="stMetric"] {{ border: 1px solid {LINE}; border-radius: 6px; padding: 10px 12px; }}
+[data-testid="stMetricLabel"] p {{ color: {MUTED}; font-size: .78rem; }}
+[data-testid="stMetricValue"] {{ color: {NAVY}; font-weight: 700; }}
 .stButton > button, .stDownloadButton > button, [data-testid="stFormSubmitButton"] > button {{
-    border-radius: 10px; font-weight: 600; border: 1px solid {LINE}; transition: transform .08s ease, box-shadow .15s ease; }}
-.stButton > button:hover, .stDownloadButton > button:hover {{ transform: translateY(-1px); box-shadow: 0 6px 14px rgba(37,99,235,.18); }}
-.stButton > button[kind="primary"], .stDownloadButton > button[kind="primary"], [data-testid="stFormSubmitButton"] > button {{
-    background: linear-gradient(135deg, {BLUE}, #1D4ED8); border: 0; color: #fff; }}
-.stTabs [data-baseweb="tab-list"] {{ gap: 6px; border-bottom: 1px solid {LINE}; }}
-.stTabs [data-baseweb="tab"] {{ padding: 8px 18px; font-weight: 600; border-radius: 10px 10px 0 0; }}
-[data-testid="stFileUploaderDropzone"] {{ border: 2px dashed #9DB4DD; border-radius: 14px; background: #F8FAFF; }}
-[data-testid="stExpander"] {{ border: 1px solid {LINE}; border-radius: 12px; background: #fff; }}
-[data-testid="stForm"] {{ border: 1px solid {LINE}; border-radius: 16px; background: #fff; padding: 1.2rem;
-    box-shadow: 0 10px 30px rgba(15,23,42,.08); }}
-[data-testid="stDataFrame"] {{ border: 1px solid {LINE}; border-radius: 12px; overflow: hidden; }}
-[data-testid="stAlert"] {{ border-radius: 12px; }}
-[data-testid="stSidebar"] [data-testid="stSidebarNav"]::before {{ content: "🧾  Invoice dashboard"; display: block; color: #fff;
-    font-weight: 800; font-size: 1.15rem; padding: 1.1rem 1rem .4rem; }}
+    border-radius: 5px; font-weight: 600; transition: none;
+}}
+.stButton > button:hover, .stDownloadButton > button:hover {{ transform: none; box-shadow: none; }}
+[data-testid="stFileUploaderDropzone"] {{ border: 1px dashed #AAB4C2; border-radius: 6px; }}
+[data-testid="stExpander"] {{ border: 1px solid {LINE}; border-radius: 6px; }}
+[data-testid="stForm"] {{ border: 1px solid {LINE}; border-radius: 6px; padding: 1rem; }}
+[data-testid="stDataFrame"] {{ border: 1px solid {LINE}; border-radius: 5px; }}
+[data-testid="stAlert"] {{ border-radius: 5px; }}
+[data-testid="stSidebar"] [data-testid="stSidebarNav"]::before {{
+    content: "Invoice dashboard"; display: block; color: #fff; font-weight: 700; font-size: 1rem; padding: .8rem 1rem .3rem;
+}}
 [data-testid="stHeader"] {{ background: transparent; }}
-
-.hero {{ background: linear-gradient(120deg, {NAVY} 0%, #123A73 55%, {BLUE} 100%); color: #fff; border-radius: 20px;
-    padding: 28px 32px; margin-bottom: 1.2rem; box-shadow: 0 14px 34px rgba(11,31,58,.28); }}
-.hero h1 {{ color: #fff; margin: 0 0 .3rem 0; font-size: 2rem; }}
-.hero p {{ color: #CFE0FF; margin: 0 0 .9rem 0; font-size: 1.02rem; }}
-.pill {{ display: inline-block; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.28); color: #fff;
-    border-radius: 999px; padding: 3px 12px; margin: 0 6px 6px 0; font-size: .78rem; font-weight: 600; }}
-.pg-head {{ display: flex; align-items: center; gap: 14px; margin: 0 0 .3rem 0; }}
-.pg-icon {{ width: 46px; height: 46px; border-radius: 13px; display: flex; align-items: center; justify-content: center;
-    font-size: 1.5rem; background: linear-gradient(135deg, #E7EEFF, #D3E1FF); }}
-.pg-head h1 {{ margin: 0; font-size: 1.8rem; }}
-.kpi {{ background: #fff; border: 1px solid {LINE}; border-radius: 16px; padding: 16px 18px; border-top: 4px solid var(--tone);
-    box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 8px 20px rgba(15,23,42,.06); }}
-.kpi .k-label {{ color: {MUTED}; font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }}
-.kpi .k-value {{ color: {NAVY}; font-size: 1.9rem; font-weight: 800; line-height: 1.2; margin-top: 2px; }}
+.hero {{ background: #F1F5F9; color: {INK}; border: 1px solid {LINE}; border-radius: 6px; padding: 18px 20px; margin-bottom: 1rem; }}
+.hero h1 {{ color: {NAVY}; margin: 0 0 .25rem 0; font-size: 1.7rem; }}
+.hero p {{ color: {MUTED}; margin: 0 0 .5rem 0; }}
+.pill {{ display: inline-block; background: #fff; border: 1px solid {LINE}; color: {INK}; border-radius: 4px; padding: 2px 8px; margin: 0 5px 5px 0; font-size: .78rem; }}
+.pg-head {{ display: flex; align-items: center; gap: 10px; margin: 0 0 .3rem 0; }}
+.pg-icon {{ width: 36px; height: 36px; border: 1px solid {LINE}; border-radius: 5px; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }}
+.pg-head h1 {{ margin: 0; font-size: 1.65rem; }}
+.kpi {{ background: #fff; border: 1px solid {LINE}; border-radius: 6px; padding: 12px 14px; border-left: 3px solid var(--tone); }}
+.kpi .k-label {{ color: {MUTED}; font-size: .74rem; font-weight: 650; text-transform: uppercase; }}
+.kpi .k-value {{ color: {NAVY}; font-size: 1.65rem; font-weight: 750; line-height: 1.2; margin-top: 2px; }}
 .kpi .k-hint {{ color: {MUTED}; font-size: .82rem; margin-top: 2px; }}
-.step {{ background: #fff; border: 1px solid {LINE}; border-radius: 16px; padding: 16px 18px; min-height: 128px;
-    box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 8px 20px rgba(15,23,42,.05); }}
-.step .s-num {{ display: inline-flex; width: 28px; height: 28px; border-radius: 50%; background: {BLUE}; color: #fff;
-    align-items: center; justify-content: center; font-weight: 800; font-size: .85rem; margin-bottom: 8px; }}
-.step .s-title {{ color: {NAVY}; font-weight: 800; font-size: 1.02rem; }}
+.step {{ background: #fff; border: 1px solid {LINE}; border-radius: 6px; padding: 14px; min-height: 110px; }}
+.step .s-num {{ display: inline-flex; width: 25px; height: 25px; border-radius: 4px; background: {BLUE}; color: #fff; align-items: center; justify-content: center; font-weight: 700; font-size: .82rem; margin-bottom: 7px; }}
+.step .s-title {{ color: {NAVY}; font-weight: 700; font-size: 1rem; }}
 .step .s-text {{ color: {MUTED}; font-size: .86rem; margin-top: 4px; }}
-.empty {{ background: #fff; border: 2px dashed #B9C8E6; border-radius: 16px; padding: 26px; text-align: center; color: {MUTED}; }}
-.empty b {{ color: {NAVY}; font-size: 1.05rem; }}
-.login-brand {{ text-align: center; margin: 2.5rem 0 1rem 0; }}
-.login-brand .logo {{ width: 64px; height: 64px; margin: 0 auto 10px auto; border-radius: 18px; display: flex; align-items: center;
-    justify-content: center; font-size: 2rem; background: linear-gradient(135deg, {NAVY}, {BLUE}); box-shadow: 0 10px 24px rgba(37,99,235,.35); }}
-.login-brand h1 {{ margin: 0; font-size: 1.8rem; }}
+.empty {{ background: #fff; border: 1px dashed #AAB4C2; border-radius: 6px; padding: 22px; text-align: center; color: {MUTED}; }}
+.empty b {{ color: {NAVY}; font-size: 1rem; }}
+.login-brand {{ text-align: center; margin: 2rem 0 1rem 0; }}
+.login-brand .logo {{ width: 48px; height: 48px; margin: 0 auto 8px auto; border: 1px solid {LINE}; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 1.7rem; }}
+.login-brand h1 {{ margin: 0; font-size: 1.65rem; }}
 .login-brand p {{ color: {MUTED}; margin: .2rem 0 0 0; }}
 </style>
 """

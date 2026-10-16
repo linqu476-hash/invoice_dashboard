@@ -1,0 +1,18 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Consignees · Invoice Dashboard{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+  <div><h1>Consignees</h1><p class="sub">One entry per destination country. Used for the CONSIGNEE block and SHIPPING MARKS.</p></div>
+  <a class="btn primary" href="{% url 'consignee_new' %}">Add country</a>
+</div>
+<div class="card">
+  <table><thead><tr><th>Country</th><th>Consignee</th><th>Address</th><th></th></tr></thead><tbody>
+  {% for c in items %}
+    <tr><td><strong>{{ c.country }}</strong></td><td>{{ c.name|default:"–" }}</td>
+    <td>{% if c.address %}{{ c.address|linebreaksbr }}{% else %}<span class="pill ok">Uses template address</span>{% endif %}</td>
+    <td><div class="row-actions"><a class="btn sm" href="{% url 'consignee_edit' c.pk %}">Edit</a>
+    <form method="post" action="{% url 'consignee_delete' c.pk %}" onsubmit="return confirm('Delete {{ c.country }}?')">{% csrf_token %}<button class="btn sm danger">Delete</button></form></div></td></tr>
+  {% empty %}<tr><td colspan="4" class="empty">No countries yet.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "dashboard/base.html" %}
+{% block title %}Packing plan → Master · Invoice Dashboard{% endblock %}
+{% block content %}
+<h1>Packing plan → MASTER_INVOICE.xlsx</h1>
+<p class="sub">Step 1 on its own (packing_to_master.py). Each carton after the first one of an invoice becomes SC260458-1, -2 ... Download the master, check it, then use it on the <a href="{% url 'index' %}">Dashboard</a> page.</p>
+
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+
+<div class="grid g21">
+  <div class="card">
+    <h2>Upload the packing plan</h2>
+    <form method="post" enctype="multipart/form-data">{% csrf_token %}
+      {{ form.as_p }}
+      <button class="btn primary" type="submit">Build master</button>
+    </form>
+  </div>
+  <div class="card">
+    <h2>What it does</h2>
+    <p class="help" style="margin:0">Columns are found by header text. N.W = sum of quantity × weight of the carton, G.W = N.W + carton weight, AMOUNT = quantity × price + adjustment.</p>
+  </div>
+</div>
+
+{% if built %}
+<div class="card">
+  <h2>Master built from {{ built.source }}</h2>
+  <p style="margin:0 0 12px">{{ built.rows }} PO lines · {{ built.qty }} pcs · ${{ built.amount|floatformat:2 }}{% if built.splits %} · {{ built.splits }} split invoices{% endif %}
+    <a class="btn primary sm" href="{% url 'master_download' built.id %}">Download MASTER_INVOICE.xlsx</a></p>
+  <table>
+    <tr><th>Invoice</th><th>Country</th><th class="n">PO lines</th><th class="n">Qty</th><th class="n">Amount</th><th class="n">N.W</th><th class="n">G.W</th></tr>
+    {% for s in built.summary %}
+    <tr><td><strong>{{ s.inv }}</strong></td><td>{{ s.country }}</td><td class="n">{{ s.po }}</td><td class="n">{{ s.qty }}</td><td class="n">{{ s.amount|floatformat:2 }}</td><td class="n">{{ s.nw|default_if_none:"–" }}</td><td class="n">{{ s.gw|default_if_none:"–" }}</td></tr>
+    {% endfor %}
+  </table>
+  {% if built.notes %}<h2 style="margin-top:16px">Check <span class="pill warn">{{ built.notes|length }}</span></h2>
+  <ul class="warn">{% for n in built.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

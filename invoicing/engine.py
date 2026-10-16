@@ -15,6 +15,7 @@ Usage:
       --packing Packing_Plan.xlsx --out invoices --date "OCTOBER 19 , 2026"
 """
 import argparse, copy, re, sys, logging
+from functools import lru_cache
 from collections import OrderedDict
 from decimal import Decimal, ROUND_HALF_UP
 import openpyxl
@@ -231,6 +232,11 @@ def _shift_formula(f, first, n):
         row = int(m.group(2))
         return m.group(1) + str(row - n if row >= first + n else row)
     return _REF.sub(one, f)
+def _load_template_workbook(path):
+    """Load the bundled template without preserving external-link metadata we never use."""
+    return openpyxl.load_workbook(path, keep_links=False)
+
+
 def cut_rows(wb, first=CUT_FROM, n=CUT_ROWS):
     """Delete rows first .. first+n-1 from every sheet of the finished workbook: cells + styles, merged cells, row heights and every
     formula (also the ones that point to another sheet, e.g. PL -> INV) move up with the rows below."""
@@ -252,16 +258,32 @@ def cut_rows(wb, first=CUT_FROM, n=CUT_ROWS):
             if (a2, c) != (b2, d):
                 _merge(ws, a2, b2, c, d)
     for ws in wb.worksheets:
-        for row in ws.iter_rows():
-            for c in row:
-                if isinstance(c.value, str) and c.value.startswith("="):
-                    c.value = _shift_formula(c.value, first, n)
+        # Only inspect materialized cells. iter_rows() walks the whole rectangular grid,
+        # including empty cells in sparse invoice templates.
+        for c in ws._cells.values():
+            if isinstance(c.value, str) and c.value.startswith("="):
+                c.value = _shift_formula(c.value, first, n)
 
 def r2(x):
     """Weights are rounded to the nearest 0.1 KG (half-up) and shown with 2 decimals: 5.39 -> 5.40, 6.43 -> 6.40."""
     d = Decimal(str(round(float(x), 6))).quantize(Decimal("0.1"), ROUND_HALF_UP)
     return d.quantize(Decimal("0.01"))
 
+# Wording changes applied to every DESCRIPTION read from the master, before grouping, so the invoice, the packing list and the
+# merge rules all see the corrected text. Add a (pattern, replacement) pair here for the next one.
+DESC_FIXES = [
+    (re.compile(r"\bUNISEX\s+SWIM\s+SHORTS\b", re.I), "UNISEX SHORTS"),
+]
+
+def fix_desc(desc):
+    """'UNISEX SWIM SHORTS 100%POLYESTER ...' -> 'UNISEX SHORTS 100%POLYESTER ...' (any spacing / case; the rest of the text is kept)."""
+    if not isinstance(desc, str):
+        return desc
+    for pattern, text in DESC_FIXES:
+        desc = pattern.sub(text, desc)
+    return desc
+
+@lru_cache(maxsize=16384)
 def split_desc(desc):
     desc = " ".join(str(desc).split())
     m = re.search(r"\d+%", desc)
@@ -281,10 +303,12 @@ def hide_for(country, override=None):
         return bool(override)
     return str(country).strip().upper() not in KEEP_CONTENT_COUNTRIES
 
+@lru_cache(maxsize=16384)
 def norm(t):
     """Comparison form of a text: spaces removed, upper case ('...RECYCLED) WOVEN' == '...RECYCLED)WOVEN')."""
     return re.sub(r"\s+", "", str(t or "")).upper()
 
+@lru_cache(maxsize=16384)
 def fabric_type(desc):
     """'KNITTED' / 'WOVEN' / '' -- read from the whole description. Woven and knitted are never combined."""
     u = " ".join(str(desc or "").upper().split())
@@ -420,7 +444,7 @@ def read_master(path):
         inv = invs.setdefault(str(g("INV NO")).strip(), dict(rows=[], raw=[], sets=0, nw=None, gw=None, cus=set(), country=set(), dates=[], mode=set(),
                                                                      cartons=1, names=[str(g("INV NO")).strip()]))
         opt = lambda k: (str(row[ix[k]]).strip() if k in ix and row[ix[k]] not in (None, "") else None)
-        raw = dict(po=str(g("PO NO")), desc=g("DESCRIPTION"), hts=hts10(g("HTS CODE")),
+        raw = dict(po=str(g("PO NO")), desc=fix_desc(g("DESCRIPTION")), hts=hts10(g("HTS CODE")),
                    amt=float(g("AMOUNT")), qty=int(g("QTY")),
                    cpo=opt("CUSTOMER PO NO"), art=opt("ART NO"))
         new_rows, n_sets = expand_set(raw)             # BABIES SETS / UNISEX SETS(T-SHIRT +SHORTS) -> invoice lines
@@ -530,14 +554,26 @@ def build(inv_no, inv, template, pack, date_txt, outdir, wb=None, inv_title=None
         if tpl.print_area:
             ws.print_area = tpl.print_area.split("!")[-1].replace("$", "")
     else:
-        wb = openpyxl.load_workbook(template); ws = wb.active
+        wb = _load_template_workbook(template); ws = wb.active
     country = next(iter(inv["country"]))
     hide_comp = hide_for(country, hide_comp)       # UK / SOUTH AFRICA / AUSTRALIA keep content, other countries remove it
-    # ---- groups
-    groups = group_rows(inv["rows"], hide_comp)
+    # ---- groups: process() precomputes these once per invoice. Reuse that cache
+    # instead of repeating normalization, description parsing, and ordered grouping
+    # during worksheet rendering (important for large packing plans).
+    groups = inv.get("_groups_cache")
+    if groups is None or inv.get("_groups_hide_comp") != hide_comp:
+        groups = group_rows(inv["rows"], hide_comp)
+        inv["_groups_cache"] = groups
+        inv["_groups_hide_comp"] = hide_comp
     n_po, n_grp = len(inv["rows"]), len(groups)
-    flags = comp_flags(groups, hide_comp)
-    lines, limit = count_lines(inv["rows"], hide_comp), line_limit(country)
+    flags = inv.get("_comp_flags_cache")
+    if flags is None or inv.get("_comp_flags_hide_comp") != hide_comp:
+        flags = comp_flags(groups, hide_comp)
+        inv["_comp_flags_cache"] = flags
+        inv["_comp_flags_hide_comp"] = hide_comp
+    # Reuse the groups already computed above instead of grouping the same invoice rows a second time.
+    # Keep this formula aligned with count_lines(): TOTAL + CUSTOMER + groups + composition lines + PO header + PO lines.
+    lines, limit = 2 + len(groups) + sum(flags) + 1 + n_po, line_limit(country)
     if lines > limit:
         log.warning("%s: %d printed lines, more than the %d allowed for %s (one carton cannot be split)", inv_no, lines, limit, country)
     # per group: description line + composition line (when flagged); + header once + PO line and spacer row per PO
@@ -657,7 +693,13 @@ def build_bkk(wb, base, fam, pack, date_txt, title="INV.BKK", consignees=None, h
         plan.append(("carton", None))
         if cus != prev_cus:
             plan.append(("cus", cus)); prev_cus = cus
-        grps = group_rows(inv["rows"], hide)
+        cached = inv.get("_groups_cache")
+        if cached is not None and inv.get("_groups_hide_comp") == hide:
+            grps = cached
+        else:
+            grps = group_rows(inv["rows"], hide)
+            inv["_groups_cache"] = grps
+            inv["_groups_hide_comp"] = hide
         for (key, items), show_comp in zip(grps.items(), comp_flags(grps, hide)):
             plan.append(("desc", (key[0], key[1], desc_suffix(items, show_comp))))
             if show_comp:
@@ -826,7 +868,11 @@ def sheet_names(inv_no, multi_base):
 def describe(inv_no, inv, pack, hide_comp=None):
     """Plain-data preview of one invoice (groups and PO lines) for the dashboard."""
     hide_comp = hide_for(next(iter(inv["country"])), hide_comp)
-    groups = group_rows(inv["rows"], hide_comp)
+    cached = inv.get("_groups_cache")
+    if cached is not None and inv.get("_groups_hide_comp") == hide_comp:
+        groups = cached
+    else:
+        groups = group_rows(inv["rows"], hide_comp)
     out = []
     for (key, items), show_comp in zip(groups.items(), comp_flags(groups, hide_comp)):
         name, hts = key[0], key[1]
@@ -845,9 +891,9 @@ class _Collect(logging.Handler):
     def emit(self, record):
         self.items.append(record.getMessage())
 
-def process(master, template, packing, date_txt, outdir, consignees=None, hide_comp=None, merge=True, marks=None, progress=None):
-    """Build every invoice (+ packing list) and the combined workbook. Returns a JSON-friendly result dict.
-    progress(fraction 0..1, text) is called after every invoice and every saved file (the page shows it while the build runs)."""
+def process(master, template, packing, date_txt, outdir, consignees=None, hide_comp=None, merge=True, marks=None, progress=None, combine=False):
+    """Build invoice-family workbooks and optionally a combined workbook.
+    progress(fraction 0..1, text) is called after each invoice and saved file."""
     import os, zipfile
     os.makedirs(outdir, exist_ok=True)
     pack, crd = read_packing(packing)
@@ -861,12 +907,22 @@ def process(master, template, packing, date_txt, outdir, consignees=None, hide_c
         invs = merge_cartons(invs, hide_comp)
     h = _Collect(); log.addHandler(h)
     try:
-        res, files, wb_all = [], [], openpyxl.load_workbook(template)
-        wb_all.active.title = "__tpl"
+        res, files = [], []
+        wb_all = _load_template_workbook(template) if combine else None
+        if wb_all is not None:
+            wb_all.active.title = "__tpl"
         multi = len({n.split("-")[0] for n in invs}) > 1
-        fam_wb = {}                                   # base invoice -> ONE workbook holding INV.BKK, INV, PL, INV-1, PL-1 ...
+        fam_wb = {}                                   # one workbook per invoice family
         fams = family_map(invs)
-        steps = len(invs) + len(fams) + 1                 # invoices built + family files saved + the combined workbook
+        # Precompute product groups once per invoice; INV.BKK, invoice sheets, and previews reuse them.
+        for inv in invs.values():
+            country = next(iter(inv["country"]))
+            effective_hide = hide_for(country, hide_comp)
+            inv["_groups_cache"] = group_rows(inv["rows"], effective_hide)
+            inv["_groups_hide_comp"] = effective_hide
+            inv["_comp_flags_cache"] = comp_flags(inv["_groups_cache"], effective_hide)
+            inv["_comp_flags_hide_comp"] = effective_hide
+        steps = len(invs) + len(fams) + (1 if combine else 0)
         done = [0]
         def say(text):
             done[0] += 1
@@ -876,17 +932,19 @@ def process(master, template, packing, date_txt, outdir, consignees=None, hide_c
             h.items.clear()
             base = no.split("-")[0]
             if base not in fam_wb:
-                fam_wb[base] = openpyxl.load_workbook(template)
+                fam_wb[base] = _load_template_workbook(template)
                 fam_wb[base].active.title = "__tpl"
                 build_bkk(fam_wb[base], base, fams[base], pack, date_txt, "INV.BKK", consignees, hide_comp, marks)
-                build_bkk(wb_all, base, fams[base], pack, date_txt, f"INV.BKK {base}" if multi else "INV.BKK", consignees, hide_comp, marks)
+                if wb_all is not None:
+                    build_bkk(wb_all, base, fams[base], pack, date_txt, f"INV.BKK {base}" if multi else "INV.BKK", consignees, hide_comp, marks)
             _, n_po, n_grp, q, amt = build(no, inv, template, pack, date_txt, outdir, wb=fam_wb[base],
                                            inv_title=sheet_names(no, False)[0], pl_title=sheet_names(no, False)[1],
                                            consignees=consignees, hide_comp=hide_comp, marks=marks)
-            it, pt = sheet_names(no, multi)
-            build(no, inv, template, pack, date_txt, outdir, wb=wb_all, inv_title=it, pl_title=pt,
-                  consignees=consignees, hide_comp=hide_comp, marks=marks)
-            warns = list(dict.fromkeys(h.items))          # same warning comes from both builds -> keep one
+            if wb_all is not None:
+                it, pt = sheet_names(no, multi)
+                build(no, inv, template, pack, date_txt, outdir, wb=wb_all, inv_title=it, pl_title=pt,
+                      consignees=consignees, hide_comp=hide_comp, marks=marks)
+            warns = list(dict.fromkeys(h.items))
             country = next(iter(inv["country"]))
             res.append(dict(
                 no=no, country=country, cus=sorted(map(str, inv["cus"]))[0], n_po=n_po, n_grp=n_grp, qty=q,
@@ -897,21 +955,24 @@ def process(master, template, packing, date_txt, outdir, consignees=None, hide_c
                 consignee_ok=find_consignee(consignees, country, sorted(map(str, inv["cus"]))[0]) is not None,
                 warnings=warns, groups=describe(no, inv, pack, hide_comp)))
             say(f"Built invoice {no} ({len(res)} of {len(invs)})")
-        for base, fwb in fam_wb.items():              # one file per invoice family: SC260460.xlsx = SC260460, -1, -2 ...
+        for base, fwb in fam_wb.items():
             del fwb["__tpl"]; fwb.active = 0
             cut_rows(fwb)
             fwb.save(os.path.join(outdir, f"{base}.xlsx"))
             files.append(f"{base}.xlsx")
             say(f"Saved {base}.xlsx ({len(files)} of {len(fam_wb)} files)")
-        del wb_all["__tpl"]; wb_all.active = 0
-        cut_rows(wb_all)
+        combined = None
+        if wb_all is not None:
+            del wb_all["__tpl"]; wb_all.active = 0
+            cut_rows(wb_all)
+            first = next(iter(invs)).split("-")[0]
+            combined = f"{first}_INV-PL.xlsx"
+            wb_all.save(os.path.join(outdir, combined))
+            say("Saved the combined workbook")
         first = next(iter(invs)).split("-")[0]
-        combined = f"{first}_INV-PL.xlsx"
-        wb_all.save(os.path.join(outdir, combined))
-        say("Saved the combined workbook")
         zip_name = f"{first}_all_invoices.zip"
-        with zipfile.ZipFile(os.path.join(outdir, zip_name), "w", zipfile.ZIP_DEFLATED) as z:
-            for f in files + [combined]:
+        with zipfile.ZipFile(os.path.join(outdir, zip_name), "w", zipfile.ZIP_STORED) as z:
+            for f in files + ([combined] if combined else []):
                 z.write(os.path.join(outdir, f), f)
     finally:
         log.removeHandler(h)
@@ -963,7 +1024,7 @@ def main():
     for no, inv in invs.items():                    # one workbook per invoice family (SC260460 + -1, -2, -3 ...)
         base = no.split("-")[0]
         if base not in fam:
-            fam[base] = openpyxl.load_workbook(a.template); fam[base].active.title = "__tpl"
+            fam[base] = _load_template_workbook(a.template); fam[base].active.title = "__tpl"
             build_bkk(fam[base], base, fams[base], pack, date_txt, "INV.BKK", hide_comp=(True if a.no_content else None))
         it, pt = sheet_names(no, False)
         _, n_po, n_grp, q, amt = build(no, inv, a.template, pack, date_txt, a.out, wb=fam[base], inv_title=it, pl_title=pt, hide_comp=(True if a.no_content else None))
@@ -973,7 +1034,7 @@ def main():
         cut_rows(fwb)
         fwb.save(f"{a.out}/{base}.xlsx"); log.info("FILE %s -> %s", fwb.sheetnames, f"{a.out}/{base}.xlsx")
     if a.combine:
-        wb = openpyxl.load_workbook(a.template); wb.active.title = "__tpl"
+        wb = _load_template_workbook(a.template); wb.active.title = "__tpl"
         multi = len({n.split("-")[0] for n in invs}) > 1
         done = set()
         for no, inv in invs.items():

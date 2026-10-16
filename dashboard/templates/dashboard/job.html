@@ -1,0 +1,92 @@
+{% extends "dashboard/base.html" %}
+{% block title %}{{ r.master_name }} · Invoice Dashboard{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+  <div><h1>{{ r.master_name }}</h1><p class="sub">Invoice date (CRD) {{ r.date }} · built {{ r.created }}</p></div>
+  <div class="row-actions">
+    <a class="btn" href="{% url 'index' %}">New upload</a>
+    <form method="post" action="{% url 'delete_job' job_id %}" onsubmit="return confirm('Delete this run and its files?')">{% csrf_token %}<button class="btn danger" type="submit">Delete run</button></form>
+  </div>
+</div>
+
+<div class="grid g4" style="margin-bottom:18px">
+  <div class="card kpi" style="margin:0"><div class="v">{{ r.totals.invoices }}</div><div class="l">Invoices</div></div>
+  <div class="card kpi" style="margin:0"><div class="v">{{ r.totals.qty }}</div><div class="l">Pieces · {{ r.totals.po_lines }} PO lines</div></div>
+  <div class="card kpi" style="margin:0"><div class="v">${{ r.totals.amount|floatformat:2 }}</div><div class="l">Total amount (USD)</div></div>
+  <div class="card kpi" style="margin:0"><div class="v">{{ r.totals.countries }}</div><div class="l">Countries{% if r.totals.warnings %} · <span class="pill warn">{{ r.totals.warnings }} warnings</span>{% endif %}</div></div>
+</div>
+
+<div class="card">
+  <h2>Downloads</h2>
+  <div class="dl">
+    <a class="btn primary" href="{% url 'download' job_id r.files.combined %}">Combined workbook ({{ r.files.combined }})</a>
+    <a class="btn" href="{% url 'download' job_id r.files.zip %}">All files (.zip)</a>
+    {% for f in r.files.items %}<a class="btn sm" href="{% url 'download' job_id f %}">{{ f }}</a>{% endfor %}
+  </div>
+</div>
+
+{% if r.built %}
+<div class="card">
+  <h2>Master invoice built from the packing plan</h2>
+  <p style="margin:0 0 10px">{{ r.built.rows }} PO lines were pasted into MASTER_INVOICE.xlsx{% if r.built.splits %}; {{ r.built.splits }} cartons became split invoices (SC...-1, -2, ...){% endif %}.
+  <a class="btn sm" href="{% url 'download' job_id r.built.file %}">Download MASTER_INVOICE.xlsx</a></p>
+  {% if r.built.notes %}<ul class="warn">{% for n in r.built.notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
+</div>
+{% endif %}
+
+{% if warnings %}
+<div class="card">
+  <h2>Check before sending <span class="pill warn">{{ warnings|length }}</span></h2>
+  <ul class="warn">{% for w in warnings %}<li><strong>{{ w.inv }}</strong> · {{ w.msg }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div class="grid g2">
+  <div class="card"><h2>Pieces by country</h2><canvas id="cCountry"></canvas></div>
+  <div class="card"><h2>Amount by invoice (USD)</h2><canvas id="cInv"></canvas></div>
+</div>
+
+<div class="card">
+  <h2>Invoices</h2>
+  <div style="display:grid;grid-template-columns:1.3fr 1.4fr .6fr .8fr 1.2fr auto;gap:10px;padding:0 4px 6px;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.4px">
+    <span>Invoice</span><span>Country</span><span>Pcs</span><span>Amount</span><span>N.W / G.W (KGS)</span><span>Status</span></div>
+  {% for i in r.invoices %}
+  <details class="inv">
+    <summary>
+      <strong>{{ i.no }}</strong><span>{{ i.country }}</span><span>{{ i.qty }}</span><span>${{ i.amount|floatformat:2 }}</span>
+      <span>{% if i.nw is not None %}{{ i.nw|floatformat:2 }} / {{ i.gw|floatformat:2 }}{% else %}<span class="pill bad">missing</span>{% endif %}</span>
+      <span>{% if i.warnings %}<span class="pill warn">{{ i.warnings|length }} to check</span>{% else %}<span class="pill ok">OK</span>{% endif %}</span>
+    </summary>
+    <div class="grp">
+      {% for g in i.groups %}
+        <h3>{{ g.name }} <span class="help" style="display:inline">HTS {{ g.hts }}</span></h3>
+        <div class="comp">{{ g.comp }}</div>
+        <table><thead><tr><th>PO.NO.</th><th>Customer PO</th><th>Art.No.</th><th class="n">Qty</th><th class="n">Price</th><th class="n">Amount</th></tr></thead><tbody>
+        {% for l in g.lines %}<tr><td>{{ l.po }}</td><td>{{ l.cus_po|default:"–" }}</td><td>{{ l.art|default:"–" }}</td><td class="n">{{ l.qty }}</td><td class="n">{{ l.price|floatformat:2 }}</td><td class="n">{{ l.amount|floatformat:2 }}</td></tr>{% endfor %}
+        </tbody></table>
+      {% endfor %}
+      <p style="margin-top:12px"><a class="btn sm" href="{% url 'download' job_id i.no|add:'.xlsx' %}">Download {{ i.no }}.xlsx</a></p>
+    </div>
+  </details>
+  {% endfor %}
+</div>
+{{ chart|json_script:"chartdata" }}
+{% endblock %}
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(function(){
+  if(!window.Chart) return;
+  var d=JSON.parse(document.getElementById('chartdata').textContent);
+  var css=getComputedStyle(document.documentElement);
+  var brand=css.getPropertyValue('--brand').trim(), ink=css.getPropertyValue('--muted').trim(), line=css.getPropertyValue('--line').trim();
+  function bar(id,labels,data,horizontal){
+    new Chart(document.getElementById(id),{type:'bar',data:{labels:labels,datasets:[{data:data,backgroundColor:brand,borderRadius:4}]},
+      options:{indexAxis:horizontal?'y':'x',plugins:{legend:{display:false}},responsive:true,
+        scales:{x:{ticks:{color:ink},grid:{color:line}},y:{ticks:{color:ink},grid:{color:line},beginAtZero:true}}}});
+  }
+  bar('cCountry',d.countries,d.country_qty,true);
+  bar('cInv',d.invoices,d.inv_amount,false);
+})();
+</script>
+{% endblock %}

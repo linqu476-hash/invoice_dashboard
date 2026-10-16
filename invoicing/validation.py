@@ -129,63 +129,64 @@ def validate_master(path):
     try:
         wb = openpyxl.load_workbook(path, data_only=True, read_only=True)
         try:
-            rows = list(wb.active.iter_rows(values_only=True))
+            iterator = wb.active.iter_rows(values_only=True)
+            header = next(iterator, None)
+            if header is None:
+                rep.add("error", "empty", "The first sheet is empty.")
+                return rep
+            hdr = [str(c).strip().upper() if c else "" for c in header]
+            ix = {h: i for i, h in enumerate(hdr) if h}
+            miss = [n for n in MASTER_REQUIRED if n not in ix]
+            if miss:
+                rep.add("error", "headers", "Missing column(s) in row 1: " + ", ".join(miss) + ". Make the master on the 'Packing plan to master' page.")
+                return rep
+
+            store, seen = {}, {}
+            sums_qty, sums_amt = 0, Decimal(0)
+            for n, row in enumerate(iterator, start=2):
+                cell = lambda k: row[ix[k]] if ix[k] < len(row) else None
+                if not cell("INV NO"):
+                    continue  # the engine skips rows without an invoice number as well
+                rep.rows += 1
+                qty, amt = _num(cell("QTY")), _num(cell("AMOUNT"))
+                if qty is None:
+                    _bucket(rep, store, "qty_missing", "error", "QTY is empty or not a number.", n)
+                elif qty != qty.to_integral_value():
+                    _bucket(rep, store, "qty_fraction", "error", "QTY is not a whole number.", n)
+                else:
+                    sums_qty += int(qty)
+                    if qty <= 0:
+                        _bucket(rep, store, "qty_not_positive", "warning", "QTY is zero or negative.", n)
+                if amt is None:
+                    _bucket(rep, store, "amount_missing", "error", "AMOUNT is empty or not a number.", n)
+                else:
+                    sums_amt += amt
+                    if amt < 0:
+                        _bucket(rep, store, "amount_negative", "warning", "AMOUNT is negative.", n)
+                if not str(cell("PO NO") or "").strip():
+                    _bucket(rep, store, "po_blank", "warning", "PO NO is blank.", n)
+                if cell("CUS NO") in (None, "") or not str(cell("CUS NO")).strip():
+                    _bucket(rep, store, "cus_blank", "warning", "CUS NO is blank, so no consignee or shipping marks can be matched.", n)
+                if not str(cell("COUNTRY") or "").strip():
+                    _bucket(rep, store, "country_blank", "warning", "COUNTRY is blank.", n)
+                if not str(cell("HTS CODE") or "").strip():
+                    _bucket(rep, store, "hts_blank", "warning", "HTS CODE is blank.", n)
+                if "SET" in str(cell("DESCRIPTION") or "").upper():
+                    rep.sets = True
+                key = tuple(str(cell(k)).strip().upper() for k in ("INV NO", "PO NO", "DESCRIPTION", "HTS CODE", "QTY", "AMOUNT"))
+                if key in seen:
+                    _bucket(rep, store, "duplicate", "warning", f"identical to row {seen[key]} (same invoice, PO, description, HTS code, QTY and AMOUNT).", n)
+                else:
+                    seen[key] = n
+            if rep.rows == 0:
+                rep.add("error", "no_rows", "No data rows found: every row has an empty INV NO.")
+            rep.qty, rep.amount = sums_qty, float(sums_amt)
+            return rep
         finally:
-            wb.close()                      # read-only workbooks keep the file open: on Windows that blocks deleting the run folder
+            wb.close()  # read-only workbook is closed on success and failure
     except Exception as e:
         rep.add("error", "unreadable", f"The workbook cannot be read: {e}")
         return rep
-    if not rows:
-        rep.add("error", "empty", "The first sheet is empty.")
-        return rep
-    hdr = [str(c).strip().upper() if c else "" for c in rows[0]]
-    ix = {h: i for i, h in enumerate(hdr) if h}
-    miss = [n for n in MASTER_REQUIRED if n not in ix]
-    if miss:
-        rep.add("error", "headers", "Missing column(s) in row 1: " + ", ".join(miss) + ". Make the master on the 'Packing plan to master' page.")
-        return rep
-
-    store, seen = {}, {}
-    sums_qty, sums_amt = 0, Decimal(0)
-    for n, row in enumerate(rows[1:], start=2):
-        cell = lambda k: row[ix[k]] if ix[k] < len(row) else None
-        if not cell("INV NO"):
-            continue                                        # the engine skips rows without an invoice number as well
-        rep.rows += 1
-        qty, amt = _num(cell("QTY")), _num(cell("AMOUNT"))
-        if qty is None:
-            _bucket(rep, store, "qty_missing", "error", "QTY is empty or not a number.", n)
-        elif qty != qty.to_integral_value():
-            _bucket(rep, store, "qty_fraction", "error", "QTY is not a whole number.", n)
-        else:
-            sums_qty += int(qty)
-            if qty <= 0:
-                _bucket(rep, store, "qty_not_positive", "warning", "QTY is zero or negative.", n)
-        if amt is None:
-            _bucket(rep, store, "amount_missing", "error", "AMOUNT is empty or not a number.", n)
-        else:
-            sums_amt += amt
-            if amt < 0:
-                _bucket(rep, store, "amount_negative", "warning", "AMOUNT is negative.", n)
-        if not str(cell("PO NO") or "").strip():
-            _bucket(rep, store, "po_blank", "warning", "PO NO is blank.", n)
-        if cell("CUS NO") in (None, "") or not str(cell("CUS NO")).strip():
-            _bucket(rep, store, "cus_blank", "warning", "CUS NO is blank, so no consignee or shipping marks can be matched.", n)
-        if not str(cell("COUNTRY") or "").strip():
-            _bucket(rep, store, "country_blank", "warning", "COUNTRY is blank.", n)
-        if not str(cell("HTS CODE") or "").strip():
-            _bucket(rep, store, "hts_blank", "warning", "HTS CODE is blank.", n)
-        if "SET" in str(cell("DESCRIPTION") or "").upper():      # BABIES SETS / UNISEX SETS are split into several invoice lines
-            rep.sets = True
-        key = tuple(str(cell(k)).strip().upper() for k in ("INV NO", "PO NO", "DESCRIPTION", "HTS CODE", "QTY", "AMOUNT"))
-        if key in seen:
-            _bucket(rep, store, "duplicate", "warning", f"identical to row {seen[key]} (same invoice, PO, description, HTS code, QTY and AMOUNT).", n)
-        else:
-            seen[key] = n
-    if rep.rows == 0:
-        rep.add("error", "no_rows", "No data rows found: every row has an empty INV NO.")
-    rep.qty, rep.amount = sums_qty, float(sums_amt)
-    return rep
 
 
 # ---- input vs output ---------------------------------------------------------------------

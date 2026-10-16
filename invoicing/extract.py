@@ -136,130 +136,147 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
     min_amount = invoices with a total amount below this (USD) are not built, except UK / AUSTRALIA / SOUTH AFRICA (0 = check off).
     min_usa_gw = USA invoices with a total G.W (kg) below this are not built (0 = check off).
     The skipped small invoices are listed in notes and in extract.last_low."""
-    wb = openpyxl.load_workbook(path, data_only=False)
+    # Most uploads are already in packing-plan format. Inspect headers in read-only mode first,
+    # avoiding openpyxl's full editable cell/style graph for these large source workbooks.
+    wb = openpyxl.load_workbook(path, data_only=False, read_only=True)
     try:
-        wb, notes = presell.convert_workbook(wb, sheet)     # "Packing Plan Pre-sell" template -> packing plan layout first
+        pre = presell.find_presell(wb, sheet)
+    except Exception:
+        wb.close()
+        raise
+    if pre is not None:
+        # Pre-sell conversion changes headers, formulas, styles, and columns; it needs a normal workbook.
+        wb.close()
+        wb = openpyxl.load_workbook(path, data_only=False)
+    try:
+        wb, notes = presell.convert_workbook(wb, sheet)     # no-op for standard packing plans
     except presell.PresellError as e:
+        wb.close()
         raise PackingError(str(e))
-    ws = find_sheet(wb, sheet)
-    c = column_map(ws)
-    g = lambda r, k: ws.cell(r, c[k]).value if k in c else None
-    cartons = []
-    for k, label in (("art", "Article Number"), ("cpo", "Customer Number"), ("crd", "Customer Request Date (CRD)"), ("mode", "Shipment Method")):
-        if k not in c:
-            notes.append(f"Column '{label}' not found in the packing plan -> { {'art': 'ART NO', 'cpo': 'CUSTOMER PO NO', 'crd': 'INV DATE', 'mode': 'MODE (the AIR-CC rule is not applied)'}[k] } left blank.")
-    cur = None                                      # cartons: list of dict(inv, lines, nw, cw)
+    try:
+        ws = find_sheet(wb, sheet)
+        c = column_map(ws)
+        cartons = []
+        for k, label in (("art", "Article Number"), ("cpo", "Customer Number"), ("crd", "Customer Request Date (CRD)"), ("mode", "Shipment Method")):
+            if k not in c:
+                notes.append(f"Column '{label}' not found in the packing plan -> { {'art': 'ART NO', 'cpo': 'CUSTOMER PO NO', 'crd': 'INV DATE', 'mode': 'MODE (the AIR-CC rule is not applied)'}[k] } left blank.")
+        cur = None                                      # cartons: list of dict(inv, lines, nw, cw)
 
-    def close(r):
-        nonlocal cur
-        if cur and cur["lines"]:
-            if cur["cw"] is None:
-                notes.append(f"{cur['inv']}: no CARTON WEIGHT found above row {r} -> G.W. = N.W.")
-            cartons.append(cur)
-        cur = None
+        def close(r):
+            nonlocal cur
+            if cur and cur["lines"]:
+                if cur["cw"] is None:
+                    notes.append(f"{cur['inv']}: no CARTON WEIGHT found above row {r} -> G.W. = N.W.")
+                cartons.append(cur)
+            cur = None
 
-    for r in range(2, ws.max_row + 1):
-        inv, po = g(r, "inv"), g(r, "po")
-        if inv and po:                                       # PO line
-            inv = str(inv).strip()
-            if cur and cur["inv"] != inv:
-                notes.append(f"Row {r}: invoice changes to {inv} without a carton total row; "
-                             f"carton of {cur['inv']} closed here.")
-                close(r)
-            cur = cur or dict(inv=inv, lines=[], nw=0.0, cw=None, first_row=r)
-            q, uq = _num(g(r, "qty")), _num(g(r, "uqty"))
-            price, adj = _num(g(r, "price")), _num(g(r, "adj")) or 0.0
-            if q is None or price is None:
-                notes.append(f"Row {r} PO {po}: quantity or price is empty -> row skipped.")
+        for r, values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            # Tuple indexing works for both read-only and editable worksheets and keeps the
+            # standard packing-plan path strictly sequential.
+            g = lambda k: values[c[k] - 1] if k in c and c[k] - 1 < len(values) else None
+            inv, po = g("inv"), g("po")
+            if inv and po:                                       # PO line
+                inv = str(inv).strip()
+                if cur and cur["inv"] != inv:
+                    notes.append(f"Row {r}: invoice changes to {inv} without a carton total row; "
+                                 f"carton of {cur['inv']} closed here.")
+                    close(r)
+                cur = cur or dict(inv=inv, lines=[], nw=0.0, cw=None, first_row=r)
+                q, uq = _num(g("qty")), _num(g("uqty"))
+                price, adj = _num(g("price")), _num(g("adj")) or 0.0
+                if q is None or price is None:
+                    notes.append(f"Row {r} PO {po}: quantity or price is empty -> row skipped.")
+                    continue
+                uw = _num(g("unit_w"))
+                if uw is None:
+                    notes.append(f"Row {r} PO {po}: unit weight is empty -> counted as 0.")
+                    uw = 0.0
+                cur["nw"] += (uq if uq is not None else q) * uw
+                cw = _num(g("carton_w"))
+                if cw:
+                    cur["cw"] = (cur["cw"] or 0.0) + cw
+                h = g("hts")
+                cur["lines"].append(dict(
+                    po=int(po) if str(po).isdigit() else po, cus=g("cus"),
+                    cpo=_txt(g("cpo")), art=_txt(g("art")), mode=_txt(g("mode")), crd=_date(g("crd")), country=str(g("country") or "").strip(),
+                    desc=str(g("desc") or "").strip(),
+                    hts=int(h) if isinstance(h, (int, float)) else h,
+                    amount=_money(q * price + adj), qty=int(q)))
                 continue
-            uw = _num(g(r, "unit_w"))
-            if uw is None:
-                notes.append(f"Row {r} PO {po}: unit weight is empty -> counted as 0.")
-                uw = 0.0
-            cur["nw"] += (uq if uq is not None else q) * uw
-            cw = _num(g(r, "carton_w"))
-            if cw:
-                cur["cw"] = (cur["cw"] or 0.0) + cw
-            h = g(r, "hts")
-            cur["lines"].append(dict(
-                po=int(po) if str(po).isdigit() else po, cus=g(r, "cus"),
-                cpo=_txt(g(r, "cpo")), art=_txt(g(r, "art")), mode=_txt(g(r, "mode")), crd=_date(g(r, "crd")), country=str(g(r, "country") or "").strip(),
-                desc=str(g(r, "desc") or "").strip(),
-                hts=int(h) if isinstance(h, (int, float)) else h,
-                amount=_money(q * price + adj), qty=int(q)))
-            continue
-        # not a PO line: carton total (orange) or invoice total (green) rows
-        no = g(r, "carton_no")
-        is_carton_total = isinstance(no, (int, float)) or (isinstance(no, str) and no.strip().isdigit())
-        is_invoice_total = isinstance(no, str) and bool(CARTON_END_TEXT.match(no))
-        if is_carton_total or is_invoice_total:
-            close(r)                                         # an invoice total row after cartons has nothing open
-    if cur and cur["lines"]:
-        notes.append(f"Last carton of {cur['inv']} has no closing total row; it was kept.")
-        close(ws.max_row)
+            # not a PO line: carton total (orange) or invoice total (green) rows
+            no = g("carton_no")
+            is_carton_total = isinstance(no, (int, float)) or (isinstance(no, str) and no.strip().isdigit())
+            is_invoice_total = isinstance(no, str) and bool(CARTON_END_TEXT.match(no))
+            if is_carton_total or is_invoice_total:
+                close(r)                                         # an invoice total row after cartons has nothing open
+        if cur and cur["lines"]:
+            notes.append(f"Last carton of {cur['inv']} has no closing total row; it was kept.")
+            close(ws.max_row)
 
-    # condition check BEFORE the master is built: total amount of the whole invoice (all cartons) under min_amount -> not built
-    totals, gws, low = {}, {}, {}
-    for ct in cartons:
-        totals[ct["inv"]] = round(totals.get(ct["inv"], 0.0) + sum(l["amount"] for l in ct["lines"]), 2)
-        gws[ct["inv"]] = round(gws.get(ct["inv"], 0.0) + ct["nw"] + (ct["cw"] or 0.0), 3)      # G.W = N.W + carton weight
-    modes = {}                                       # invoice -> mode (AIR-CC wins when any PO line of the invoice is AIR-CC)
-    for ct in cartons:
-        for l in ct["lines"]:
-            if l["mode"] and (ct["inv"] not in modes or presell.is_air_cc(l["mode"])):
-                modes[ct["inv"]] = presell.MUST_BUILD_MODE_LABEL if presell.is_air_cc(l["mode"]) else l["mode"]
-    for inv, tot in totals.items():
-        country = next((l["country"] for ct in cartons if ct["inv"] == inv for l in ct["lines"] if l["country"]), "")
-        cu = country.strip().upper()
-        if presell.is_air_cc(modes.get(inv)):          # mode AIR-CC: master invoice must be created, whatever the amount / weight
-            would_skip = (min_amount and tot < min_amount and cu not in ALWAYS_BUILD_COUNTRIES) or \
-                         (min_usa_gw and cu in USA_COUNTRIES and gws[inv] < min_usa_gw)
-            if would_skip:
-                notes.append(f"{inv} ({country or 'no country'}): mode AIR-CC -> master invoice built although total is ${tot:.2f} / "
-                             f"G.W {gws[inv]:.2f} KG (below the minimum).")
-            continue
-        if min_amount and tot < min_amount and cu not in ALWAYS_BUILD_COUNTRIES:
-            low[inv] = (tot, country)
-            notes.append(f"{inv} ({country or 'no country'}): total ${tot:.2f} is below ${min_amount:.0f} -> no master invoice built "
-                         f"(UK, Australia and South Africa are always built).")
-        elif min_usa_gw and cu in USA_COUNTRIES and gws[inv] < min_usa_gw:
-            low[inv] = (tot, country)
-            notes.append(f"{inv} ({country}): total G.W {gws[inv]:.2f} KG is below {min_usa_gw:g} KG -> no master invoice built (USA).")
-    extract.last_low = {k: dict(total=v[0], country=v[1]) for k, v in low.items()}
+        # condition check BEFORE the master is built: total amount of the whole invoice (all cartons) under min_amount -> not built
+        totals, gws, low = {}, {}, {}
+        for ct in cartons:
+            totals[ct["inv"]] = round(totals.get(ct["inv"], 0.0) + sum(l["amount"] for l in ct["lines"]), 2)
+            gws[ct["inv"]] = round(gws.get(ct["inv"], 0.0) + ct["nw"] + (ct["cw"] or 0.0), 3)      # G.W = N.W + carton weight
+        modes = {}                                       # invoice -> mode (AIR-CC wins when any PO line of the invoice is AIR-CC)
+        for ct in cartons:
+            for l in ct["lines"]:
+                if l["mode"] and (ct["inv"] not in modes or presell.is_air_cc(l["mode"])):
+                    modes[ct["inv"]] = presell.MUST_BUILD_MODE_LABEL if presell.is_air_cc(l["mode"]) else l["mode"]
+        for inv, tot in totals.items():
+            country = next((l["country"] for ct in cartons if ct["inv"] == inv for l in ct["lines"] if l["country"]), "")
+            cu = country.strip().upper()
+            if presell.is_air_cc(modes.get(inv)):          # mode AIR-CC: master invoice must be created, whatever the amount / weight
+                would_skip = (min_amount and tot < min_amount and cu not in ALWAYS_BUILD_COUNTRIES) or \
+                             (min_usa_gw and cu in USA_COUNTRIES and gws[inv] < min_usa_gw)
+                if would_skip:
+                    notes.append(f"{inv} ({country or 'no country'}): mode AIR-CC -> master invoice built although total is ${tot:.2f} / "
+                                 f"G.W {gws[inv]:.2f} KG (below the minimum).")
+                continue
+            if min_amount and tot < min_amount and cu not in ALWAYS_BUILD_COUNTRIES:
+                low[inv] = (tot, country)
+                notes.append(f"{inv} ({country or 'no country'}): total ${tot:.2f} is below ${min_amount:.0f} -> no master invoice built "
+                             f"(UK, Australia and South Africa are always built).")
+            elif min_usa_gw and cu in USA_COUNTRIES and gws[inv] < min_usa_gw:
+                low[inv] = (tot, country)
+                notes.append(f"{inv} ({country}): total G.W {gws[inv]:.2f} KG is below {min_usa_gw:g} KG -> no master invoice built (USA).")
+        extract.last_low = {k: dict(total=v[0], country=v[1]) for k, v in low.items()}
 
-    # splits: 2nd carton of an invoice -> -1, 3rd -> -2 ...
-    seen, rows = {}, []
-    for ct in cartons:
-        n = seen.get(ct["inv"], 0)
-        seen[ct["inv"]] = n + 1
-        no = ct["inv"] if n == 0 else f"{ct['inv']}-{n}"
-        if only and ct["inv"] not in only and no not in only:
-            continue
-        if skip and (ct["inv"] in skip or no in skip):
-            continue
-        if ct["inv"] in low:
-            continue
-        nw = round(ct["nw"], 3)
-        gw = round(ct["nw"] + (ct["cw"] or 0.0), 3)
-        for i, ln in enumerate(ct["lines"]):
-            rows.append(dict(inv=no, mode=modes.get(ct["inv"]) or ln["mode"], date=ln["crd"], po=ln["po"], cpo=ln["cpo"], art=ln["art"], cus=ln["cus"], country=ln["country"], desc=ln["desc"],
-                             hts=ln["hts"], amount=ln["amount"], qty=ln["qty"],
-                             nw=nw if i == 0 else None, gw=gw if i == 0 else None))
-    if only:
-        found = {r["inv"].split("-")[0] for r in rows} | {r["inv"] for r in rows}
-        for want in only:
-            if want not in found:
-                notes.append(f"Invoice {want} was not found in the packing plan.")
-    if skip:
-        present = {ct["inv"] for ct in cartons}
-        for want in skip:
-            if want not in present and not any(want == f"{i}-{n}" for i in present for n in range(1, 50)):
-                notes.append(f"Invoice {want} to skip was not found in the packing plan.")
-    if not rows:
-        raise PackingError("No PO lines left to build: every invoice was skipped or is below the minimum amount / USA weight." if (skip or low)
-                           else "No PO lines found in the packing plan.")
-    return rows, notes
+        # splits: 2nd carton of an invoice -> -1, 3rd -> -2 ...
+        seen, rows = {}, []
+        for ct in cartons:
+            n = seen.get(ct["inv"], 0)
+            seen[ct["inv"]] = n + 1
+            no = ct["inv"] if n == 0 else f"{ct['inv']}-{n}"
+            if only and ct["inv"] not in only and no not in only:
+                continue
+            if skip and (ct["inv"] in skip or no in skip):
+                continue
+            if ct["inv"] in low:
+                continue
+            nw = round(ct["nw"], 3)
+            gw = round(ct["nw"] + (ct["cw"] or 0.0), 3)
+            for i, ln in enumerate(ct["lines"]):
+                rows.append(dict(inv=no, mode=modes.get(ct["inv"]) or ln["mode"], date=ln["crd"], po=ln["po"], cpo=ln["cpo"], art=ln["art"], cus=ln["cus"], country=ln["country"], desc=ln["desc"],
+                                 hts=ln["hts"], amount=ln["amount"], qty=ln["qty"],
+                                 nw=nw if i == 0 else None, gw=gw if i == 0 else None))
+        if only:
+            found = {r["inv"].split("-")[0] for r in rows} | {r["inv"] for r in rows}
+            for want in only:
+                if want not in found:
+                    notes.append(f"Invoice {want} was not found in the packing plan.")
+        if skip:
+            present = {ct["inv"] for ct in cartons}
+            for want in skip:
+                if want not in present and not any(want == f"{i}-{n}" for i in present for n in range(1, 50)):
+                    notes.append(f"Invoice {want} to skip was not found in the packing plan.")
+        if not rows:
+            raise PackingError("No PO lines left to build: every invoice was skipped or is below the minimum amount / USA weight." if (skip or low)
+                               else "No PO lines found in the packing plan.")
+        return rows, notes
 
+    finally:
+        wb.close()
 
 def write_master(rows, out):
     """Same layout as MASTER_INVOICE.xlsx: header, one block per invoice, a blank row between blocks."""

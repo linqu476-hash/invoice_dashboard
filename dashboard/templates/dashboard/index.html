@@ -1,0 +1,31 @@
+{% extends "dashboard/base.html" %}
+{% block content %}
+<h1>Create invoices and packing lists</h1>
+<p class="sub">Upload the packing plan: the master invoice is built from it, then every invoice and packing list. You get one workbook per invoice, a combined workbook (INV, PL, INV-1, PL-1 ...) and a zip of everything.</p>
+
+{% if error %}<div class="alert bad">{{ error }}</div>{% endif %}
+
+<div class="grid g21">
+  <div class="card">
+    <h2>Upload your Excel file</h2>
+    <form method="post" enctype="multipart/form-data">{% csrf_token %}
+      {{ form.as_p }}
+      <button class="btn primary" type="submit">Build invoices</button>
+    </form>
+  </div>
+  <div>
+    <div class="card">
+      <h2>Before you start</h2>
+      <p class="help" style="margin:0 0 8px">Destination countries need a consignee address and shipping marks. Missing ones are printed as yellow placeholders on the invoice.</p>
+      <p style="margin:0"><a href="{% url 'consignees' %}">Manage consignees</a> ({{ consignees }} on file)</p>
+    </div>
+    <div class="card">
+      <h2>Recent runs</h2>
+      {% for j in recent %}
+        <p style="margin:0 0 10px"><a href="{% url 'job' j.id %}"><strong>{{ j.master }}</strong></a><br>
+        <span class="help">{{ j.created }} · {{ j.invoices }} invoices · {{ j.qty }} pcs{% if j.warnings %} · <span class="pill warn">{{ j.warnings }} warnings</span>{% endif %}</span></p>
+      {% empty %}<p class="empty">Nothing yet.</p>{% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 from pathlib import Path
 
@@ -131,12 +132,33 @@ class PipelineTests(unittest.TestCase):
     def setUp(self):
         fresh_db()
 
+    def test_template_loader_disables_unused_external_link_preservation(self):
+        with patch("invoicing.engine.openpyxl.load_workbook") as load:
+            runner.engine._load_template_workbook("template.xlsx")
+        load.assert_called_once_with("template.xlsx", keep_links=False)
+
+    def test_cut_rows_shifts_formulas_without_scanning_full_sheet_grid(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws["A20"] = "=SUM(A1:A18)"
+        # openpyxl itself uses iter_rows() once while deleting rows. The
+        # optimized formula pass must not add a second full-grid scan.
+        original = ws.iter_rows
+        with patch.object(ws, "iter_rows", wraps=original) as iter_rows:
+            runner.engine.cut_rows(wb)
+        self.assertEqual(iter_rows.call_count, 1)
+        self.assertEqual(ws["A18"].value, "=SUM(A1:A16)")
+
     def test_build_missing_then_fixable_then_rebuild(self):
         run = runner.build_invoices(make_master(country="GERMANY", cus="999001"), "m.xlsx")
         r = run["result"]
         self.assertEqual(r["totals"]["invoices"], 1)
         self.assertTrue(run["report_pdf"].startswith(b"%PDF"))
         self.assertIn(r["files"]["zip"], run["files"])
+        self.assertIsNone(r["files"]["combined"])  # default build skips the expensive combined workbook
+        with zipfile.ZipFile(io.BytesIO(run["files"][r["files"]["zip"]])) as zf:
+            self.assertNotIn("SC900001_INV-PL.xlsx", zf.namelist())
+            self.assertTrue(all(info.compress_type == zipfile.ZIP_STORED for info in zf.infolist()))
         self.assertEqual([m["customer_no"] for m in runner.missing_consignees(r)], ["999001"])
         self.assertEqual(runner.fixable(r), [])
         store.save_consignee("999001", "Test Co", "1 Street\nBerlin")
@@ -146,6 +168,53 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(run2["result"]["invoices"][0]["consignee_ok"])
         self.assertEqual(runner.missing_consignees(run2["result"]), [])
 
+
+    def test_multiple_invoice_families_are_saved_and_packaged(self):
+        wb = openpyxl.load_workbook(io.BytesIO(make_master(country="GERMANY", cus="999001")))
+        headers = {str(c.value).strip().upper(): c.column for c in wb.active[1] if c.value is not None}
+        wb.active.cell(3, headers["INV NO"], "SC900002")
+        data = io.BytesIO()
+        wb.save(data)
+        run = runner.build_invoices(data.getvalue(), "two-families.xlsx")
+        items = set(run["result"]["files"]["items"])
+        self.assertEqual(items, {"SC900001.xlsx", "SC900002.xlsx"})
+        with zipfile.ZipFile(io.BytesIO(run["files"][run["result"]["files"]["zip"]])) as zf:
+            self.assertEqual(set(zf.namelist()), items)
+            for name in items:
+                self.assertTrue(zf.read(name).startswith(b"PK"))
+
+    def test_invoice_grouping_is_precomputed_once_per_invoice(self):
+        # Grouping is shared by INV.BKK, invoice sheets, optional combined output,
+        # and the result preview. It should not be repeated by each consumer.
+        from invoicing import engine
+        original = engine.group_rows
+        with patch.object(engine, "group_rows", wraps=original) as grouped:
+            run = runner.build_invoices(make_master(country="GERMANY", cus="999001"), "m.xlsx")
+        self.assertEqual(run["result"]["totals"]["invoices"], 1)
+        self.assertEqual(grouped.call_count, 1)
+        self.assertEqual(run["result"]["invoices"][0]["n_grp"], 1)
+
+    def test_combined_workbook_is_optional(self):
+        data = make_master(country="GERMANY", cus="999001")
+        run = runner.build_invoices(data, "m.xlsx", combine=True)
+        combined = run["result"]["files"]["combined"]
+        self.assertEqual(combined, "SC900001_INV-PL.xlsx")
+        self.assertNotIn(combined, run["files"])  # XLSX bytes are extracted from ZIP only when downloaded
+        self.assertEqual(set(run["files"]), {run["result"]["files"]["zip"]})
+        self.assertTrue(runner.output_file_bytes(run, combined).startswith(b"PK"))
+        with zipfile.ZipFile(io.BytesIO(run["files"][run["result"]["files"]["zip"]])) as zf:
+            self.assertIn(combined, zf.namelist())
+        self.assertEqual(run["result"]["totals"]["invoices"], 1)
+
+    def test_output_file_bytes_rejects_unlisted_or_path_names(self):
+        run = runner.build_invoices(make_master(country="GERMANY", cus="999001"), "m.xlsx")
+        with self.assertRaises(ValueError):
+            runner.output_file_bytes(run, "../secrets.toml")
+        with self.assertRaises(ValueError):
+            runner.output_file_bytes(run, "not-in-this-build.xlsx")
+        filename = run["result"]["files"]["items"][0]
+        self.assertTrue(runner.output_file_bytes(run, filename).startswith(b"PK"))
+
     def test_invalid_master_lists_problems_and_builds_nothing(self):
         wb = openpyxl.Workbook()
         wb.active.append(["INV NO", "PO NO"])                 # required columns missing
@@ -154,6 +223,41 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(runner.InvalidMaster) as cm:
             runner.build_invoices(b.getvalue(), "bad.xlsx")
         self.assertTrue(cm.exception.problems)
+
+    def test_standard_packing_plan_extracts_in_read_only_path(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["INV.NO.", "PO Number", "Gps Customer Number", "COUNTRY", "DESCRIPTION", "HTS CODE1:",
+                   "Price Per Unit", "Total Adjustments", "weight", "CARTON WEIGHT", "CARTON NO.",
+                   "Customer Number", "Article Number", "Customer Request Date (CRD)", "Shipment Method",
+                   "Ordered Quantity", "Ordered Quantity"])
+        ws.append(["SC900001", "PO-1", "999001", "UNITED KINGDOM", "SHORTS KNITTED", 6104630000,
+                   10, 0, 0.5, 1, None, "CPO-1", "ART-1", datetime.datetime(2026, 10, 19),
+                   "Air Express", 10, 10])
+        ws.append([None, None, None, None, None, None, None, None, None, None, 1])
+        p = Path(_TMP) / "standard_packing_stream.xlsx"
+        wb.save(p)
+        rows, notes = extract.extract(p)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["inv"], rows[0]["qty"], rows[0]["amount"]), ("SC900001", 10, 100.0))
+        self.assertEqual((rows[0]["nw"], rows[0]["gw"]), (5.0, 6.0))
+        self.assertEqual(notes, [])
+
+    def test_read_packing_streaming_columns(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.cell(2, 7, datetime.datetime(2026, 10, 19))  # CRD
+        ws.cell(2, 9, "PO-1")
+        ws.cell(2, 20, "CUS-1")
+        ws.cell(2, 29, "ART-1")
+        ws.cell(2, 37, 12)
+        ws.cell(2, 38, 2.5)
+        ws.cell(2, 41, 0.25)
+        p = Path(_TMP) / "packing_readonly.xlsx"
+        wb.save(p)
+        pack, crd = __import__("invoicing.engine", fromlist=["read_packing"]).read_packing(p)
+        self.assertEqual(pack["PO-1"], dict(art="ART-1", cus="CUS-1", price=2.5, qty=12, adj=0.25))
+        self.assertEqual(crd, datetime.datetime(2026, 10, 19))
 
     def test_not_an_excel_file(self):
         with self.assertRaises(runner.InvalidMaster):
