@@ -55,7 +55,17 @@ WANT = dict(inv="inv.no.", po="po number", cus="gps customer number", country="c
             hts="hts code1:", price="price per unit", adj="total adjustments", unit_w="weight",
             carton_w="carton weight", carton_no="carton no.",
             cpo="customer number", art="article number",
-            crd="customer request date (crd)", mode="shipment method")
+            crd="customer request date (crd)", mode="shipment method",
+            nwk="nw./kgs", gwk="gw./kgs", merch="total merchandise amount")
+# other spellings of a header that are accepted (e.g. "HTS.CODE.1" instead of "HTS CODE1:")
+ALIASES = dict(carton_w=("cartons weight",), hts=("hts.code.1", "hts code.1", "hts code 1", "hts code1", "hts code"))
+
+
+def _norm_hdr(h):
+    """lower-case and drop spaces, dots, colons, dashes, underscores so 'HTS.CODE.1' == 'hts code1:'"""
+    return re.sub(r"[\s.:_/\\-]+", "", str(h).lower())
+
+
 CARTON_END_TEXT = re.compile(r"^\s*\d+\s+OF\s+\d+\s*$", re.I)
 
 
@@ -112,11 +122,20 @@ def find_sheet(wb, name=None):
 
 def column_map(ws):
     hdr = [str(c.value).strip().lower() if c.value is not None else "" for c in ws[1]]
-    optional = {"adj", "carton_w", "carton_no", "unit_w", "cpo", "art", "crd", "mode"}
+    optional = {"adj", "carton_w", "carton_no", "unit_w", "cpo", "art", "crd", "mode", "nwk", "gwk", "merch"}
     cols, missing = {}, []
+    norm = [_norm_hdr(h) for h in hdr]
     for key, text in WANT.items():
-        if text in hdr:
-            cols[key] = hdr.index(text) + 1
+        found = None
+        for cand in (text,) + ALIASES.get(key, ()):
+            if cand in hdr:
+                found = hdr.index(cand)
+                break
+            if _norm_hdr(cand) in norm:
+                found = norm.index(_norm_hdr(cand))
+                break
+        if found is not None:
+            cols[key] = found + 1
         elif key not in optional:
             missing.append(text)
     qtys = [i + 1 for i, h in enumerate(hdr) if h == "ordered quantity"]
@@ -128,6 +147,101 @@ def column_map(ws):
     if missing:
         raise PackingError(f"Packing plan is missing columns: {missing}")
     return cols
+
+
+def _round1(x):
+    """Round half up to 1 decimal (15.25 -> 15.3, 15.24 -> 15.2); plain round() would round 15.25 down."""
+    from decimal import Decimal, ROUND_HALF_UP
+    return float(Decimal(str(round(x, 6))).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
+def _orig_totals(path, sheet):
+    """Carton totals (NW./KGS, GW./KGS) read straight from the uploaded file, before the pre-sell conversion
+    (which may not carry them over): {invoice: [(nw, gw), ...]} in carton order. Cached values are used (the totals are formulas)."""
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True)
+        ws = wb[sheet] if sheet and sheet in wb.sheetnames else None
+        if ws is None:
+            for w in wb.worksheets:
+                head = {str(x.value).strip().lower() for x in w[1] if x.value}
+                if "inv.no." in head and "po number" in head:
+                    ws = w
+                    break
+        if ws is None:
+            return {}
+        hdr = [_norm_hdr(x.value) if x.value is not None else "" for x in ws[1]]
+        col = lambda name: hdr.index(name) + 1 if name in hdr else None
+        ci, cp, cn, cg = col("invno"), col("ponumber"), col("nwkgs"), col("gwkgs")
+        if not (ci and cp and cg):
+            return {}
+        out, cur, opened = {}, None, False
+        for r in range(2, ws.max_row + 1):
+            inv, po = ws.cell(r, ci).value, ws.cell(r, cp).value
+            if inv and po:
+                cur, opened = str(inv).strip(), True
+            elif opened:
+                out.setdefault(cur, []).append((_num(ws.cell(r, cn).value) if cn else None, _num(ws.cell(r, cg).value)))
+                opened = False
+        return out
+    except Exception:
+        return {}
+
+
+def _po_key(v):
+    try:
+        return str(int(float(v)))
+    except (TypeError, ValueError):
+        return str(v).strip()
+
+
+def _orig_merch(path, sheet):
+    """AMOUNT = column "Total Merchandise Amount" of the uploaded file, read before the pre-sell conversion (which may drop it):
+    {(invoice, po): [amount, ...]} in row order. Cached values are used (the column is a formula)."""
+    try:
+        wb = openpyxl.load_workbook(path, data_only=True)
+        ws = wb[sheet] if sheet and sheet in wb.sheetnames else None
+        if ws is None:
+            for w in wb.worksheets:
+                head = {str(x.value).strip().lower() for x in w[1] if x.value}
+                if "inv.no." in head and "po number" in head:
+                    ws = w
+                    break
+        if ws is None:
+            return {}
+        hdr = [_norm_hdr(x.value) if x.value is not None else "" for x in ws[1]]
+        col = lambda name: hdr.index(name) + 1 if name in hdr else None
+        ci, cp, cm = col("invno"), col("ponumber"), col("totalmerchandiseamount")
+        if not (ci and cp and cm):
+            return {}
+        out = {}
+        for r in range(2, ws.max_row + 1):
+            inv, po = ws.cell(r, ci).value, ws.cell(r, cp).value
+            if inv and po:
+                out.setdefault((str(inv).strip(), _po_key(po)), []).append(_num(ws.cell(r, cm).value))
+        return out
+    except Exception:
+        return {}
+
+
+def _carton_weights(ct):
+    """(N.W, G.W) of a carton: the values on its total row (NW./KGS, GW./KGS) when the packing plan has them,
+    else the sum of the NW./KGS lines, else computed (qty x unit weight; G.W = N.W + carton weight)."""
+    nw = ct.get("nw_t") or ct.get("nw_sum") or ct["nw"]
+    gw = ct.get("gw_t") or (nw + (ct["cw"] or 0.0))
+    return nw, gw
+
+
+def _is_separator(ws, r, c):
+    """A row that is not a PO line and is either filled with a solid colour (the orange / green total rows) or empty."""
+    try:
+        cell = ws.cell(r, c["inv"])
+        if cell.fill is not None and cell.fill.fill_type == "solid":
+            rgb = cell.fill.fgColor.rgb if cell.fill.fgColor.type == "rgb" else "theme"
+            if rgb not in ("00000000", "FFFFFFFF"):
+                return True
+    except Exception:
+        pass
+    return not any(ws.cell(r, col).value not in (None, "") for col in (c["inv"], c["po"], c["desc"]))
 
 
 def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUNT, min_usa_gw=MIN_USA_GW_KG):
@@ -149,11 +263,12 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
         if k not in c:
             notes.append(f"Column '{label}' not found in the packing plan -> { {'art': 'ART NO', 'cpo': 'CUSTOMER PO NO', 'crd': 'INV DATE', 'mode': 'MODE (the AIR-CC rule is not applied)'}[k] } left blank.")
     cur = None                                      # cartons: list of dict(inv, lines, nw, cw)
+    merch_orig, occ = _orig_merch(path, sheet), {}
 
     def close(r):
         nonlocal cur
         if cur and cur["lines"]:
-            if cur["cw"] is None:
+            if cur["cw"] is None and not cur.get("gw_t"):
                 notes.append(f"{cur['inv']}: no CARTON WEIGHT found above row {r} -> G.W. = N.W.")
             cartons.append(cur)
         cur = None
@@ -167,6 +282,12 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
                              f"carton of {cur['inv']} closed here.")
                 close(r)
             cur = cur or dict(inv=inv, lines=[], nw=0.0, cw=None, first_row=r)
+            k = (inv, _po_key(po))                               # AMOUNT: Total Merchandise Amount of this PO line
+            i = occ.get(k, 0)
+            occ[k] = i + 1
+            merch = _num(g(r, "merch"))
+            if merch is None and i < len(merch_orig.get(k, [])):
+                merch = merch_orig[k][i]
             q, uq = _num(g(r, "qty")), _num(g(r, "uqty"))
             price, adj = _num(g(r, "price")), _num(g(r, "adj")) or 0.0
             if q is None or price is None:
@@ -177,6 +298,9 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
                 notes.append(f"Row {r} PO {po}: unit weight is empty -> counted as 0.")
                 uw = 0.0
             cur["nw"] += (uq if uq is not None else q) * uw
+            ln_nw = _num(g(r, "nwk"))
+            if ln_nw:
+                cur["nw_sum"] = cur.get("nw_sum", 0.0) + ln_nw
             cw = _num(g(r, "carton_w"))
             if cw:
                 cur["cw"] = (cur["cw"] or 0.0) + cw
@@ -186,23 +310,47 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
                 cpo=_txt(g(r, "cpo")), art=_txt(g(r, "art")), mode=_txt(g(r, "mode")), crd=_date(g(r, "crd")), country=str(g(r, "country") or "").strip(),
                 desc=str(g(r, "desc") or "").strip(),
                 hts=int(h) if isinstance(h, (int, float)) else h,
-                amount=_money(q * price + adj), qty=int(q)))
+                amount=_money(merch if merch is not None else q * price + adj), qty=int(q)))
             continue
         # not a PO line: carton total (orange) or invoice total (green) rows
         no = g(r, "carton_no")
         is_carton_total = isinstance(no, (int, float)) or (isinstance(no, str) and no.strip().isdigit())
         is_invoice_total = isinstance(no, str) and bool(CARTON_END_TEXT.match(no))
-        if is_carton_total or is_invoice_total:
+        # pre-sell files have no "Carton No." numbers: their cartons are separated by an orange (filled) or empty row
+        is_separator = _is_separator(ws, r, c)
+        if cur and (is_carton_total or is_separator):      # N.W / G.W printed on the carton total row (NW./KGS, GW./KGS)
+            tn, tg = _num(g(r, "nwk")), _num(g(r, "gwk"))
+            if tn:
+                cur["nw_t"] = tn
+            if tg:
+                cur["gw_t"] = tg
+        if is_carton_total or is_invoice_total or is_separator:
             close(r)                                         # an invoice total row after cartons has nothing open
     if cur and cur["lines"]:
         notes.append(f"Last carton of {cur['inv']} has no closing total row; it was kept.")
         close(ws.max_row)
 
+    # N.W / G.W printed on the orange carton rows of the uploaded file win over anything computed
+    orig, idx = _orig_totals(path, sheet), {}
+    for ct in cartons:
+        n = idx.get(ct["inv"], 0)
+        idx[ct["inv"]] = n + 1
+        tot = orig.get(ct["inv"], [])
+        if n < len(tot):
+            tn, tg = tot[n]
+            if tn:
+                ct["nw_t"] = tn
+            if tg:
+                ct["gw_t"] = tg
+    for inv, tot in orig.items():
+        if inv in idx and len(tot) != idx[inv]:
+            notes.append(f"{inv}: {len(tot)} carton total rows in the uploaded file but {idx[inv]} cartons built -> check N.W / G.W.")
+
     # condition check BEFORE the master is built: total amount of the whole invoice (all cartons) under min_amount -> not built
     totals, gws, low = {}, {}, {}
     for ct in cartons:
         totals[ct["inv"]] = round(totals.get(ct["inv"], 0.0) + sum(l["amount"] for l in ct["lines"]), 2)
-        gws[ct["inv"]] = round(gws.get(ct["inv"], 0.0) + ct["nw"] + (ct["cw"] or 0.0), 3)      # G.W = N.W + carton weight
+        gws[ct["inv"]] = round(gws.get(ct["inv"], 0.0) + _round1(_carton_weights(ct)[1]), 3)
     modes = {}                                       # invoice -> mode (AIR-CC wins when any PO line of the invoice is AIR-CC)
     for ct in cartons:
         for l in ct["lines"]:
@@ -239,8 +387,8 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
             continue
         if ct["inv"] in low:
             continue
-        nw = round(ct["nw"], 3)
-        gw = round(ct["nw"] + (ct["cw"] or 0.0), 3)
+        nw, gw = _carton_weights(ct)
+        nw, gw = _round1(nw), _round1(gw)                    # N.W / G.W: 1 digit after the decimal point (15.165 -> 15.2)
         for i, ln in enumerate(ct["lines"]):
             rows.append(dict(inv=no, mode=modes.get(ct["inv"]) or ln["mode"], date=ln["crd"], po=ln["po"], cpo=ln["cpo"], art=ln["art"], cus=ln["cus"], country=ln["country"], desc=ln["desc"],
                              hts=ln["hts"], amount=ln["amount"], qty=ln["qty"],
@@ -277,7 +425,7 @@ def write_master(rows, out):
         ws.append([r["inv"], r["date"], r["po"], r["cpo"], r["art"], r["cus"], r["country"], r["desc"], r["hts"],
                    r["amount"], r["qty"], r["nw"], r["gw"], r.get("mode")])
     for row in ws.iter_rows(min_row=2):
-        row[11].number_format = row[12].number_format = "0.0##"
+        row[11].number_format = row[12].number_format = "0.0"
         row[9].number_format = "0.00"
         row[1].number_format = "dd-mmm-yyyy"
     for col, w in zip("ABCDEFGHIJKLMN", (13, 13, 13, 16, 10, 11, 16, 62, 15, 10, 7, 8, 8, 13)):
