@@ -12,6 +12,8 @@ How the packing plan is read
   * every carton after the first one of the same invoice is a split:
         SC260458  (carton 1),  SC260458-1  (carton 2),  SC260458-2  (carton 3) ...
   * N.W  = sum of  (Ordered Quantity x weight)  of the carton's PO lines
+           (if the sheet has no "Weight" column but has "NW./KGS.", that column is already the weight of the line,
+            so it is added as it is, without multiplying by the quantity)
     G.W  = N.W + CARTON WEIGHT of that carton            (both are written on the carton's first row)
   * AMOUNT = Ordered Quantity x Price Per Unit + Total Adjustments
   * INV DATE = Customer Request Date (CRD) of the PO line
@@ -57,6 +59,10 @@ WANT = dict(inv="inv.no.", po="po number", cus="gps customer number", country="c
             cpo="customer number", art="article number",
             crd="customer request date (crd)", mode="shipment method")
 CARTON_END_TEXT = re.compile(r"^\s*\d+\s+OF\s+\d+\s*$", re.I)
+
+# FIX: headers of the net-weight column used when the sheet has no "Weight" column (compared lower-case, spaces removed).
+# This column holds the net weight of the whole PO line, so it is NOT multiplied by the quantity.
+NW_HEADERS = ("nw./kgs.", "nw./kgs", "nw/kgs.", "nw/kgs", "n.w./kgs.", "n.w./kgs", "n.w.(kgs)", "nw(kgs)", "nw.(kgs)")
 
 
 class PackingError(ValueError):
@@ -119,6 +125,13 @@ def column_map(ws):
             cols[key] = hdr.index(text) + 1
         elif key not in optional:
             missing.append(text)
+    # FIX: no "Weight" column -> use the NW./KGS. column (net weight of the whole line)
+    if "unit_w" not in cols:
+        for i, h in enumerate(hdr):
+            if h.replace(" ", "") in NW_HEADERS:
+                cols["unit_w"] = i + 1
+                cols["nw_line"] = True             # this column is already the weight of the line -> do not multiply by qty
+                break
     qtys = [i + 1 for i, h in enumerate(hdr) if h == "ordered quantity"]
     if qtys:
         cols["qty"] = qtys[0]                      # order level quantity
@@ -148,6 +161,8 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
     for k, label in (("art", "Article Number"), ("cpo", "Customer Number"), ("crd", "Customer Request Date (CRD)"), ("mode", "Shipment Method")):
         if k not in c:
             notes.append(f"Column '{label}' not found in the packing plan -> { {'art': 'ART NO', 'cpo': 'CUSTOMER PO NO', 'crd': 'INV DATE', 'mode': 'MODE (the AIR-CC rule is not applied)'}[k] } left blank.")
+    if "unit_w" not in c:                            # FIX: tell the user once instead of 322 "unit weight is empty" lines
+        notes.append("No 'Weight' or 'NW./KGS.' column found in the packing plan -> N.W counted as 0 for every line.")
     cur = None                                      # cartons: list of dict(inv, lines, nw, cw)
 
     def close(r):
@@ -174,9 +189,11 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
                 continue
             uw = _num(g(r, "unit_w"))
             if uw is None:
-                notes.append(f"Row {r} PO {po}: unit weight is empty -> counted as 0.")
+                if "unit_w" in c:                            # column exists but this cell is empty
+                    notes.append(f"Row {r} PO {po}: unit weight is empty -> counted as 0.")
                 uw = 0.0
-            cur["nw"] += (uq if uq is not None else q) * uw
+            # FIX: NW./KGS. is the weight of the whole line -> add it as it is; a "Weight" column is per piece -> x quantity
+            cur["nw"] += uw if c.get("nw_line") else (uq if uq is not None else q) * uw
             cw = _num(g(r, "carton_w"))
             if cw:
                 cur["cw"] = (cur["cw"] or 0.0) + cw
