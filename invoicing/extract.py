@@ -15,7 +15,8 @@ How the packing plan is read
            (if the sheet has no "Weight" column but has "NW./KGS.", that column is already the weight of the line,
             so it is added as it is, without multiplying by the quantity)
     G.W  = N.W + CARTON WEIGHT of that carton            (both are written on the carton's first row)
-  * AMOUNT = Ordered Quantity x Price Per Unit + Total Adjustments
+  * AMOUNT = column "Total Merchandise" of the PO line (NOT "Total Document", which includes the adjustments);
+             if the sheet has no such column: Ordered Quantity x Price Per Unit + Total Adjustments
   * INV DATE = Customer Request Date (CRD) of the PO line
 
 Usage
@@ -57,7 +58,7 @@ WANT = dict(inv="inv.no.", po="po number", cus="gps customer number", country="c
             hts="hts code1:", price="price per unit", adj="total adjustments", unit_w="weight",
             carton_w="carton weight", carton_no="carton no.",
             cpo="customer number", art="article number",
-            crd="customer request date (crd)", mode="shipment method")
+            crd="customer request date (crd)", mode="shipment method", merch="total merchandise")
 CARTON_END_TEXT = re.compile(r"^\s*\d+\s+OF\s+\d+\s*$", re.I)
 
 # FIX: the net-weight column used when the sheet has no "Weight" column: NW./KGS., NW / KGS, N.W.(KGS), Net Weight (kg) ...
@@ -121,7 +122,7 @@ def find_sheet(wb, name=None):
 
 def column_map(ws):
     hdr = [str(c.value).strip().lower() if c.value is not None else "" for c in ws[1]]
-    optional = {"adj", "carton_w", "carton_no", "unit_w", "cpo", "art", "crd", "mode"}
+    optional = {"adj", "carton_w", "carton_no", "unit_w", "cpo", "art", "crd", "mode", "merch"}
     cols, missing = {}, []
     for key, text in WANT.items():
         if text in hdr:
@@ -177,6 +178,8 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
     for k, label in (("art", "Article Number"), ("cpo", "Customer Number"), ("crd", "Customer Request Date (CRD)"), ("mode", "Shipment Method")):
         if k not in c:
             notes.append(f"Column '{label}' not found in the packing plan -> { {'art': 'ART NO', 'cpo': 'CUSTOMER PO NO', 'crd': 'INV DATE', 'mode': 'MODE (the AIR-CC rule is not applied)'}[k] } left blank.")
+    if "merch" not in c:
+        notes.append("Column 'Total Merchandise' not found in the packing plan -> AMOUNT calculated as quantity x price + adjustments.")
     if "unit_w" not in c:                            # FIX: tell the user once instead of 322 "unit weight is empty" lines
         heads = [str(x.value).strip() for x in ws[1] if x.value is not None and str(x.value).strip()]
         notes.append("No 'Weight' or 'NW./KGS.' column found in the packing plan -> N.W counted as 0 for every line. "
@@ -210,9 +213,16 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
             cur = cur or dict(inv=inv, lines=[], nw=0.0, cw=None, first_row=r)
             q, uq = _num(g(r, "qty")), _num(g(r, "uqty"))
             price, adj = _num(g(r, "price")), _num(g(r, "adj")) or 0.0
-            if q is None or price is None:
+            merch = _num(wv(r, "merch")) if "merch" in c else None        # AMOUNT = Total Merchandise of the line
+            if q is None or (price is None and merch is None):
                 notes.append(f"Row {r} PO {po}: quantity or price is empty -> row skipped.")
                 continue
+            if merch is None:
+                if "merch" in c:
+                    notes.append(f"Row {r} PO {po}: Total Merchandise is empty -> amount calculated as quantity x price + adjustments.")
+                amount = _money(q * price + adj)
+            else:
+                amount = _money(merch)
             raw_w = wv(r, "unit_w") if "unit_w" in c else None
             uw = _num(raw_w)
             if uw is None:
@@ -232,7 +242,7 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
                 cpo=_txt(g(r, "cpo")), art=_txt(g(r, "art")), mode=_txt(g(r, "mode")), crd=_date(g(r, "crd")), country=str(g(r, "country") or "").strip(),
                 desc=str(g(r, "desc") or "").strip(),
                 hts=int(h) if isinstance(h, (int, float)) else h,
-                amount=_money(q * price + adj), qty=int(q)))
+                amount=amount, qty=int(q)))
             continue
         # not a PO line: carton total (orange) or invoice total (green) rows
         no = g(r, "carton_no")
