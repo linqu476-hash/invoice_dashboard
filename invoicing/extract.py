@@ -57,7 +57,8 @@ WANT = dict(inv="inv.no.", po="po number", cus="gps customer number", country="c
             hts="hts code1:", price="price per unit", adj="total adjustments", unit_w="weight",
             carton_w="carton weight", carton_no="carton no.",
             cpo="customer number", art="article number",
-            crd="customer request date (crd)", mode="shipment method", merch="total merchandise")
+            crd="customer request date (crd)", mode="shipment method", merch="total merchandise amount")
+MERCH_ALIASES = ("total merchandise amount", "total merchandise")      # header of the AMOUNT column: "Total Merchandise Amount"
 CARTON_END_TEXT = re.compile(r"^\s*\d+\s+OF\s+\d+\s*$", re.I)
 
 # FIX: the net-weight column used when the sheet has no "Weight" column: NW./KGS., NW / KGS, N.W.(KGS), Net Weight (kg) ...
@@ -126,8 +127,10 @@ def column_map(ws):
     optional = {"adj", "carton_w", "carton_no", "unit_w", "cpo", "art", "crd", "mode"}
     cols, missing = {}, []
     for key, text in WANT.items():
-        if cz(text) in hdr:
-            cols[key] = hdr.index(cz(text)) + 1
+        names = MERCH_ALIASES if key == "merch" else (text,)
+        hit = next((cz(n) for n in names if cz(n) in hdr), None)
+        if hit:
+            cols[key] = hdr.index(hit) + 1
         elif key not in optional:
             missing.append(text)
     # FIX: no "Weight" column -> use the NW./KGS. column (net weight of the whole line)
