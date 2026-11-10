@@ -60,9 +60,12 @@ WANT = dict(inv="inv.no.", po="po number", cus="gps customer number", country="c
             crd="customer request date (crd)", mode="shipment method")
 CARTON_END_TEXT = re.compile(r"^\s*\d+\s+OF\s+\d+\s*$", re.I)
 
-# FIX: headers of the net-weight column used when the sheet has no "Weight" column (compared lower-case, spaces removed).
-# This column holds the net weight of the whole PO line, so it is NOT multiplied by the quantity.
-NW_HEADERS = ("nw./kgs.", "nw./kgs", "nw/kgs.", "nw/kgs", "n.w./kgs.", "n.w./kgs", "n.w.(kgs)", "nw(kgs)", "nw.(kgs)")
+# FIX: the net-weight column used when the sheet has no "Weight" column: NW./KGS., NW / KGS, N.W.(KGS), Net Weight (kg) ...
+# Matching ignores case, spaces, dots, slashes, brackets and line breaks. This column holds the net weight of the whole PO line,
+# so it is NOT multiplied by the quantity.
+def is_nw_header(h):
+    k = re.sub(r"[^a-z0-9]", "", str(h or "").lower())
+    return k.startswith(("nw", "netweight")) and "kg" in k and "gw" not in k
 
 
 class PackingError(ValueError):
@@ -128,7 +131,7 @@ def column_map(ws):
     # FIX: no "Weight" column -> use the NW./KGS. column (net weight of the whole line)
     if "unit_w" not in cols:
         for i, h in enumerate(hdr):
-            if h.replace(" ", "") in NW_HEADERS:
+            if is_nw_header(h):
                 cols["unit_w"] = i + 1
                 cols["nw_line"] = True             # this column is already the weight of the line -> do not multiply by qty
                 break
@@ -157,12 +160,29 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
     ws = find_sheet(wb, sheet)
     c = column_map(ws)
     g = lambda r, k: ws.cell(r, c[k]).value if k in c else None
+    try:                                              # FIX: same sheet with the SAVED results of formulas (weights are often formulas)
+        wsv = openpyxl.load_workbook(path, data_only=True)[ws.title]
+    except Exception:
+        wsv = None
+
+    def wv(r, k):
+        """Weight cell value; a formula cell is replaced by the value Excel saved for it."""
+        v = ws.cell(r, c[k]).value
+        if (v is None or (isinstance(v, str) and v.startswith("="))) and wsv is not None:
+            sv = wsv.cell(r, c[k]).value
+            if sv is not None:
+                return sv
+        return v
     cartons = []
     for k, label in (("art", "Article Number"), ("cpo", "Customer Number"), ("crd", "Customer Request Date (CRD)"), ("mode", "Shipment Method")):
         if k not in c:
             notes.append(f"Column '{label}' not found in the packing plan -> { {'art': 'ART NO', 'cpo': 'CUSTOMER PO NO', 'crd': 'INV DATE', 'mode': 'MODE (the AIR-CC rule is not applied)'}[k] } left blank.")
     if "unit_w" not in c:                            # FIX: tell the user once instead of 322 "unit weight is empty" lines
-        notes.append("No 'Weight' or 'NW./KGS.' column found in the packing plan -> N.W counted as 0 for every line.")
+        heads = [str(x.value).strip() for x in ws[1] if x.value is not None and str(x.value).strip()]
+        notes.append("No 'Weight' or 'NW./KGS.' column found in the packing plan -> N.W counted as 0 for every line. "
+                     f"Headers read from row 1 of sheet '{ws.title}': {heads}")
+    elif c.get("nw_line"):
+        notes.append(f"N.W is read from column {openpyxl.utils.get_column_letter(c['unit_w'])} of sheet '{ws.title}' (weight of the whole line).")
     cur = None                                      # cartons: list of dict(inv, lines, nw, cw)
 
     def close(r):
@@ -170,6 +190,12 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
         if cur and cur["lines"]:
             if cur["cw"] is None:
                 notes.append(f"{cur['inv']}: no CARTON WEIGHT found above row {r} -> G.W. = N.W.")
+            tn = cur.get("tot_nw")
+            if tn and cur["nw"] == 0:                        # lines gave no weight -> use the carton total row
+                cur["nw"] = tn
+                notes.append(f"{cur['inv']}: N.W taken from the carton total row ({tn:g} KG).")
+            elif tn and abs(cur["nw"] - tn) > 0.05:
+                notes.append(f"{cur['inv']}: N.W of the lines {cur['nw']:.2f} KG differs from the carton total row {tn:g} KG (lines used).")
             cartons.append(cur)
         cur = None
 
@@ -187,9 +213,12 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
             if q is None or price is None:
                 notes.append(f"Row {r} PO {po}: quantity or price is empty -> row skipped.")
                 continue
-            uw = _num(g(r, "unit_w"))
+            raw_w = wv(r, "unit_w") if "unit_w" in c else None
+            uw = _num(raw_w)
             if uw is None:
-                if "unit_w" in c:                            # column exists but this cell is empty
+                if isinstance(raw_w, str) and raw_w.startswith("="):
+                    notes.append(f"Row {r} PO {po}: weight is a formula with no saved result (open the file in Excel, save it, upload again) -> counted as 0.")
+                elif "unit_w" in c:                          # column exists but this cell is empty
                     notes.append(f"Row {r} PO {po}: unit weight is empty -> counted as 0.")
                 uw = 0.0
             # FIX: NW./KGS. is the weight of the whole line -> add it as it is; a "Weight" column is per piece -> x quantity
@@ -209,6 +238,10 @@ def extract(path, sheet=None, only=None, skip=None, min_amount=MIN_INVOICE_AMOUN
         no = g(r, "carton_no")
         is_carton_total = isinstance(no, (int, float)) or (isinstance(no, str) and no.strip().isdigit())
         is_invoice_total = isinstance(no, str) and bool(CARTON_END_TEXT.match(no))
+        if (is_carton_total or is_invoice_total) and cur and c.get("nw_line"):
+            tw = _num(wv(r, "unit_w"))                       # NW./KGS. on the carton total row (green / orange)
+            if tw:
+                cur["tot_nw"] = tw
         if is_carton_total or is_invoice_total:
             close(r)                                         # an invoice total row after cartons has nothing open
     if cur and cur["lines"]:
