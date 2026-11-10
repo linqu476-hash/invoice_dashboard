@@ -120,22 +120,24 @@ def find_sheet(wb, name=None):
 
 
 def column_map(ws):
-    hdr = [str(c.value).strip().lower() if c.value is not None else "" for c in ws[1]]
+    # FIX: headers are compared without spaces, line breaks and punctuation ("Total Merchan\ndise" == "Total Merchandise")
+    cz = lambda t: re.sub(r"[^a-z0-9]", "", str(t).lower())
+    hdr = [cz(c.value) if c.value is not None else "" for c in ws[1]]
     optional = {"adj", "carton_w", "carton_no", "unit_w", "cpo", "art", "crd", "mode"}
     cols, missing = {}, []
     for key, text in WANT.items():
-        if text in hdr:
-            cols[key] = hdr.index(text) + 1
+        if cz(text) in hdr:
+            cols[key] = hdr.index(cz(text)) + 1
         elif key not in optional:
             missing.append(text)
     # FIX: no "Weight" column -> use the NW./KGS. column (net weight of the whole line)
     if "unit_w" not in cols:
         for i, h in enumerate(hdr):
-            if is_nw_header(h):
+            if is_nw_header(h):                      # h is already the compact form
                 cols["unit_w"] = i + 1
                 cols["nw_line"] = True             # this column is already the weight of the line -> do not multiply by qty
                 break
-    qtys = [i + 1 for i, h in enumerate(hdr) if h == "ordered quantity"]
+    qtys = [i + 1 for i, h in enumerate(hdr) if h == "orderedquantity"]
     if qtys:
         cols["qty"] = qtys[0]                      # order level quantity
         cols["uqty"] = qtys[-1]                    # size level quantity (used for the weight)
