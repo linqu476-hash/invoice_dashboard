@@ -8,7 +8,7 @@ Rules implemented (from README.MD):
   * group key = description (gender + garment) + HTS code + composition  -> same key is merged
   * each group shows 4 lines: TOTAL / CUSTOMER NO. (once) , "<NAME>  (HTS.CODE : x)", composition,
     then the PO.NO. / CUSTOMER PO NO. / ART.NO. header (once, after the first group), then PO lines
-  * UK / SOUTH AFRICA / AUSTRALIA: groups with the SAME description + HTS code print the
+  * UK / SOUTH AFRICA / AUSTRALIA: groups with the SAME description (same or different HTS code) print the
     "<NAME>  (HTS.CODE : x)" line only ONCE (first group); the other groups print their composition line + PO lines only
   * inside a group, PO lines with the SAME PO + CUSTOMER PO + ART.NO. + unit price are printed as ONE line (qty and amount added)
   * file name = invoice number (SC260458, SC260458-1, SC260458-2 ...)
@@ -346,7 +346,7 @@ def group_rows(rows, hide_comp=False):
     and a KNITTED line are NEVER merged.
     Texts are compared ignoring spaces and case, so a content line typed with a stray space still joins its group;
     the group shows the text of its first PO line.
-    Normal mode (UK / SOUTH AFRICA / AUSTRALIA): groups with the same description + HTS code are placed next to each other
+    Normal mode (UK / SOUTH AFRICA / AUSTRALIA): groups with the same description (any HTS code) are placed next to each other
     (order of first appearance), so desc_flags() can print the description + HTS line only for the first of them.
     Last step: PO lines of a group with the same PO + CUSTOMER PO + ART.NO. + unit price become ONE line (merge_same_po)."""
     groups, seen = OrderedDict(), {}
@@ -359,8 +359,8 @@ def group_rows(rows, hide_comp=False):
     if not hide_comp:
         order = {}
         for key in groups:
-            order.setdefault((norm(key[0]), norm(key[1])), len(order))
-        groups = OrderedDict(sorted(groups.items(), key=lambda kv: order[(norm(kv[0][0]), norm(kv[0][1]))]))
+            order.setdefault(norm(key[0]), len(order))              # same DESCRIPTION (any HTS code) -> next to each other
+        groups = OrderedDict(sorted(groups.items(), key=lambda kv: order[norm(kv[0][0])]))
     return OrderedDict((k, merge_same_po(v)) for k, v in groups.items())
 
 def comp_flags(groups, hide_comp):
@@ -371,13 +371,13 @@ def comp_flags(groups, hide_comp):
 def desc_flags(groups, hide_comp):
     """One bool per group: print its description line '<NAME>  (HTS.CODE : x)'?
     Other countries (hide_comp): always.
-    UK / SOUTH AFRICA / AUSTRALIA: only the FIRST group of each description + HTS code; the next groups with the
-    same description + HTS code print only their content line + PO lines."""
+    UK / SOUTH AFRICA / AUSTRALIA: only the FIRST group of each DESCRIPTION (gender + garment); the next groups with the
+    same description (same or different HTS code) print only their content line + PO lines."""
     if hide_comp:
         return [True] * len(groups)
     seen, out = set(), []
     for key in groups:
-        k = (norm(key[0]), norm(key[1]))
+        k = norm(key[0])                                    # description only: a different HTS code does NOT print it again
         out.append(k not in seen)
         seen.add(k)
     return out
