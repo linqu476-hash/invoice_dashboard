@@ -10,6 +10,7 @@ Rules implemented (from README.MD):
     then the PO.NO. / CUSTOMER PO NO. / ART.NO. header (once, after the first group), then PO lines
   * UK / SOUTH AFRICA / AUSTRALIA: groups with the SAME description + HTS code print the
     "<NAME>  (HTS.CODE : x)" line only ONCE (first group); the other groups print their composition line + PO lines only
+  * inside a group, PO lines with the SAME PO + CUSTOMER PO + ART.NO. + unit price are printed as ONE line (qty and amount added)
   * file name = invoice number (SC260458, SC260458-1, SC260458-2 ...)
 
 Usage:
@@ -319,6 +320,26 @@ def desc_suffix(items, show_comp):
 def desc_text(name, hts, suffix):
     return f"{name}  (HTS.CODE : {hts})" + (f" {suffix}" if suffix else "")
 
+def merge_same_po(items):
+    """Inside ONE group: PO lines with the same PO + CUSTOMER PO + ART.NO. + unit price are printed as ONE line
+    (qty and amount added). A line with a different unit price (surcharge / rounding balance) stays its own line, so no unit price
+    ever gets more than 2 decimals. Split lines (cont = PO blank) are never merged. The merged lines are COPIES:
+    inv["rows"] is not changed, so the totals, the surcharge logic and the master reconciliation are not affected."""
+    out, idx = [], {}
+    for it in items:
+        if it.get("cont") or not it["qty"]:
+            out.append(it)
+            continue
+        k = (it["po"], it.get("cpo"), it.get("art"), round(it["amt"] / it["qty"], 4))
+        if k in idx:
+            m = out[idx[k]]
+            m["qty"] += it["qty"]
+            m["amt"] = round(m["amt"] + it["amt"], 2)
+        else:
+            idx[k] = len(out)
+            out.append(dict(it))
+    return out
+
 def group_rows(rows, hide_comp=False):
     """Group PO lines. Normal: description (gender + garment) + HTS + composition. hide_comp: description + HTS + fabric
     (KNITTED / WOVEN), so e.g. UNISEX JACKET / 6202401091 becomes ONE group whatever the % composition was, but a WOVEN
@@ -326,7 +347,8 @@ def group_rows(rows, hide_comp=False):
     Texts are compared ignoring spaces and case, so a content line typed with a stray space still joins its group;
     the group shows the text of its first PO line.
     Normal mode (UK / SOUTH AFRICA / AUSTRALIA): groups with the same description + HTS code are placed next to each other
-    (order of first appearance), so desc_flags() can print the description + HTS line only for the first of them."""
+    (order of first appearance), so desc_flags() can print the description + HTS line only for the first of them.
+    Last step: PO lines of a group with the same PO + CUSTOMER PO + ART.NO. + unit price become ONE line (merge_same_po)."""
     groups, seen = OrderedDict(), {}
     for r in rows:
         name, comp = split_desc(r["desc"])
@@ -339,7 +361,7 @@ def group_rows(rows, hide_comp=False):
         for key in groups:
             order.setdefault((norm(key[0]), norm(key[1])), len(order))
         groups = OrderedDict(sorted(groups.items(), key=lambda kv: order[(norm(kv[0][0]), norm(kv[0][1]))]))
-    return groups
+    return OrderedDict((k, merge_same_po(v)) for k, v in groups.items())
 
 def comp_flags(groups, hide_comp):
     """One bool per group: print its content (composition) line?  Normal: always.  hide_comp: only the first group;
@@ -362,10 +384,11 @@ def desc_flags(groups, hide_comp):
 
 def count_lines(rows, hide_comp):
     """Printed lines of an invoice = TOTAL CARTONS row + CUSTOMER NO. row + (description [+ content]) per group
-    + the PO.NO./CUSTOMER PO NO./ART.NO. header + one line per PO line.  Blank spacer rows are not counted.
+    + the PO.NO./CUSTOMER PO NO./ART.NO. header + one line per PRINTED PO line (same PO + ART.NO. + price lines are merged).
+    Blank spacer rows are not counted.
     A repeated description + HTS line (UK / SOUTH AFRICA / AUSTRALIA) is not printed, so it is not counted."""
     groups = group_rows(rows, hide_comp)
-    return 2 + sum(desc_flags(groups, hide_comp)) + sum(comp_flags(groups, hide_comp)) + 1 + len(rows)
+    return 2 + sum(desc_flags(groups, hide_comp)) + sum(comp_flags(groups, hide_comp)) + 1 + sum(len(v) for v in groups.values())
 
 def line_limit(country):
     return LINE_LIMIT_KEEP if str(country).strip().upper() in KEEP_CONTENT_COUNTRIES else LINE_LIMIT_OTHER
@@ -692,7 +715,7 @@ def build(inv_no, inv, template, pack, date_txt, outdir, wb=None, inv_title=None
     hide_comp = hide_for(country, hide_comp)       # UK / SOUTH AFRICA / AUSTRALIA keep content, other countries remove it
     # ---- groups
     groups = group_rows(inv["rows"], hide_comp)
-    n_po, n_grp = len(inv["rows"]), len(groups)
+    n_po, n_grp = sum(len(v) for v in groups.values()), len(groups)     # n_po = PRINTED PO lines (same PO + ART.NO. + price merged)
     flags = comp_flags(groups, hide_comp)
     dflags = desc_flags(groups, hide_comp)         # UK / SOUTH AFRICA / AUSTRALIA: same description + HTS prints its heading only once
     lines, limit = count_lines(inv["rows"], hide_comp), line_limit(country)
