@@ -265,6 +265,19 @@ def r2(x):
     d = Decimal(str(round(float(x), 6))).quantize(Decimal("0.1"), ROUND_HALF_UP)
     return d.quantize(Decimal("0.01"))
 
+# Words removed from the master DESCRIPTION before the invoice is built ("MEN'S SWIM SHORTS" -> "MEN'S SHORTS").
+# Add more words here if needed. Matching is whole-word and not case sensitive.
+REMOVE_WORDS = ("SWIM",)
+_REMOVE_RE = re.compile(r"(?<![A-Za-z0-9])(?:" + "|".join(map(re.escape, REMOVE_WORDS)) + r")(?![A-Za-z0-9])", re.I)
+
+def clean_desc(desc):
+    """Description from the master without the words in REMOVE_WORDS (SWIM), extra spaces collapsed.
+    Done once when the master is read, so grouping, HTS line, composition and totals all use the cleaned text
+    ('MEN'S SWIM SHORTS' and 'MEN'S SHORTS' with the same HTS code become one group)."""
+    if desc is None:
+        return desc
+    return " ".join(_REMOVE_RE.sub(" ", str(desc)).split())
+
 def split_desc(desc):
     desc = " ".join(str(desc).split())
     m = re.search(r"\d+%", desc)
@@ -457,7 +470,7 @@ def read_master(path):
         inv = invs.setdefault(str(g("INV NO")).strip(), dict(rows=[], raw=[], sets=0, nw=None, gw=None, cus=set(), country=set(), dates=[], mode=set(),
                                                                      cartons=1, names=[str(g("INV NO")).strip()]))
         opt = lambda k: (str(row[ix[k]]).strip() if k in ix and row[ix[k]] not in (None, "") else None)
-        raw = dict(po=str(g("PO NO")), desc=g("DESCRIPTION"), hts=hts10(g("HTS CODE")),
+        raw = dict(po=str(g("PO NO")), desc=clean_desc(g("DESCRIPTION")), hts=hts10(g("HTS CODE")),
                    amt=float(g("AMOUNT")), qty=int(g("QTY")),
                    cpo=opt("CUSTOMER PO NO"), art=opt("ART NO"))
         new_rows, n_sets = expand_set(raw)             # BABIES SETS / UNISEX SETS(T-SHIRT +SHORTS) -> invoice lines
