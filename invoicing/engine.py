@@ -455,39 +455,59 @@ def balance_prices(inv_no, rows):
         log.warning("%s: rounding difference %.2f put on the last PO line (price keeps more than 2 decimals)", inv_no, diff / 100)
 
 def apply_surcharges(invs, pack):
-    """PO lines with a SURCHARGE (surcharge = master amount - qty x plan price). Looks at ALL invoices of the run.
-    * qty 1 line   : price = amount, the surcharge is already inside its own price -> nothing to do.
+    """PO lines with a SURCHARGE. The packing plan says  amount = qty x price + adj  (adj = surcharge).
+    The MASTER amount may already contain the surcharge or may not (then the invoice would print qty x price only and the
+    surcharge is lost), so it is checked for every PO line of ALL invoices of the run:
+        surcharge S = plan adj                              (master amount = qty x price, or = qty x price + adj)
+                    = master amount - qty x price           (no plan adj, but the master amount differs from qty x price)
+    * qty 1 line   : price = amount -> the surcharge goes into its own price (price + S).
     * qty > 1 line : the unit price must stay the plan price (17.37 x 5 = 86.85); a price that does not multiply to the amount
-                     (5 x 17.37 = 94.60) is wrong. The surcharge is added to a PO line that has ONE piece alone (price = old price + surcharge),
-                     searched in this order, the first group that has one wins (the last such line of the group is used):
-                       1) the same invoice,
-                       2) another invoice of the same family (SC260460 / SC260460-1 ...) with the same customer no.,
-                       3) any other invoice of the run with the same customer no. AND destination country (never another customer),
-                       4) none found anywhere -> the line is split: (qty - 1) pcs at the plan price + 1 pc at (price + surcharge); the
+                     (5 x 17.37 = 94.60) is wrong. S is added to a PO line that has ONE piece alone (price = old price + S),
+                     searched in this order, the first group that has one wins:
+                       1) the same invoice (last qty 1 line),
+                       2) another invoice of the same family (SC260460 / SC260460-1 ...) with the same customer no. (nearest invoice first),
+                       3) any other invoice of the run with the same customer no. AND destination country (nearest first, never another customer),
+                       4) none found anywhere -> the line is split: (qty - 1) pcs at the plan price + 1 pc at (price + S); the
                           second line has no PO / CUSTOMER PO / ART.NO. (same layout as a split BABIES SETS line).
-    SET lines are left alone. Every move is written to inv["notes"] of the invoices involved (shown as warnings in the dashboard)."""
+    SET lines are left alone. Every change is written to inv["notes"] of the invoices involved (shown as warnings in the dashboard)."""
     def note(nos, msg):
         for n in dict.fromkeys(nos):
             invs[n].setdefault("notes", []).append(msg)
         log.info("%s", msg)
     fam = lambda n: n.split("-")[0]
     cus_of = lambda i: {cus_key(c) for c in i["cus"]}
+    unreadable = set()
     for no, inv in invs.items():
         for r in list(inv["rows"]):
             p = pack.get(r["po"])
-            if not p or r.get("cont") or r.get("set") or r["qty"] < 2:
+            if not p or r.get("cont") or r.get("set"):
                 continue
             base = p.get("price")
             if base is None:
-                note([no], f"{no}: PO {r['po']} - plan price not readable (empty or formula without saved value) -> surcharge not checked")
+                if no not in unreadable:
+                    unreadable.add(no)
+                    note([no], f"{no}: packing plan price of PO {r['po']} is not readable (empty, or a formula without saved value) -> surcharges of this invoice not checked")
                 continue
             if p.get("qty") is not None and int(p["qty"]) != r["qty"]:
                 continue
             if abs(round(base, 2) - base) > 1e-9:
                 continue                               # plan price with more than 2 decimals -> leave as is
-            adj = round(r["amt"] - r["qty"] * base, 2)
-            if abs(adj) < 0.005:
+            plan_adj = round(p.get("adj") or 0, 2)
+            diff = round(r["amt"] - r["qty"] * base, 2)
+            if plan_adj and abs(diff) < 0.005:
+                s, missing = plan_adj, True            # the master amount has NO surcharge -> it is added now
+            elif plan_adj and abs(diff - plan_adj) < 0.005:
+                s, missing = plan_adj, False           # the master amount already contains it
+            else:
+                s, missing = diff, False
+            if abs(s) < 0.005:
                 continue                               # no surcharge on this line
+            what = "surcharge (missing in master amount)" if missing else "surcharge"
+            if r["qty"] == 1:
+                if missing:
+                    r["amt"] = round(base + s, 2)
+                    note([no], f"{no}: {what} {s:.2f} added to the price of PO {r['po']} (qty 1): {base:.2f} -> {base + s:.2f}")
+                continue
             tiers = ([], [], [])
             for n2, i2 in invs.items():
                 if n2 == no:
@@ -499,19 +519,24 @@ def apply_surcharges(invs, pack):
                 else:
                     continue
                 tiers[t].extend((n2, x) for x in i2["rows"] if x is not r and x["qty"] == 1 and not x.get("cont") and not x.get("set"))
-            cand = next((t[-1] for t in tiers if t), None)
+            cand = None
+            for k, t in enumerate(tiers):
+                if t:
+                    first_inv = t[0][0]                # same invoice: its last qty 1 line; other invoices: the nearest invoice that has one
+                    cand = t[-1] if k == 0 else [c for c in t if c[0] == first_inv][-1]
+                    break
+            r["amt"] = round(r["qty"] * base, 2)
             if cand:
                 n2, c = cand
-                r["amt"] = round(r["qty"] * base, 2)
-                c["amt"] = round(c["amt"] + adj, 2)
+                c["amt"] = round(c["amt"] + s, 2)
                 where = "same invoice" if n2 == no else f"invoice {n2}"
-                note([no, n2], f"{no}: surcharge {adj:.2f} of PO {r['po']} (qty {r['qty']}) added to PO {c['po']} (qty 1, {where})")
+                note([no, n2], f"{no}: {what} {s:.2f} of PO {r['po']} (qty {r['qty']}) added to PO {c['po']} (qty 1, {where})")
             else:
                 i = next(k for k, x in enumerate(inv["rows"]) if x is r)
-                extra = dict(r); extra.update(qty=1, amt=round(base + adj, 2), cont=True)
+                extra = dict(r); extra.update(qty=1, amt=round(base + s, 2), cont=True)
                 r["qty"] -= 1; r["amt"] = round(r["qty"] * base, 2)
                 inv["rows"].insert(i + 1, extra)
-                note([no], f"{no}: surcharge {adj:.2f} of PO {r['po']} split off as 1 pc ({base + adj:.2f}); no qty 1 line found in any invoice")
+                note([no], f"{no}: {what} {s:.2f} of PO {r['po']} split off as 1 pc ({base + s:.2f}); no qty 1 line found in any invoice")
 
 def read_master(path):
     ws = openpyxl.load_workbook(path, data_only=True).active
