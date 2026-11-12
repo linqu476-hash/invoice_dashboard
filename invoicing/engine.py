@@ -8,6 +8,8 @@ Rules implemented (from README.MD):
   * group key = description (gender + garment) + HTS code + composition  -> same key is merged
   * each group shows 4 lines: TOTAL / CUSTOMER NO. (once) , "<NAME>  (HTS.CODE : x)", composition,
     then the PO.NO. / CUSTOMER PO NO. / ART.NO. header (once, after the first group), then PO lines
+  * UK / SOUTH AFRICA / AUSTRALIA: groups with the SAME description + HTS code print the
+    "<NAME>  (HTS.CODE : x)" line only ONCE (first group); the other groups print their composition line + PO lines only
   * file name = invoice number (SC260458, SC260458-1, SC260458-2 ...)
 
 Usage:
@@ -138,6 +140,7 @@ CONSIGNEES = {                                     # per destination country
 }
 # Destination countries that keep the content (composition) line in EVERY group.
 # All other countries: content only on the first group, next groups = description + HTS code only.
+# These same countries also print the description + HTS line only ONCE per description + HTS code (see desc_flags).
 KEEP_CONTENT_COUNTRIES = {"UNITED KINGDOM", "SOUTH AFRICA", "AUSTRALIA"}
 # Maximum printed lines of ONE invoice, counted from the "TOTAL : n CARTONS." row down to the last PO line.
 # Only rows that hold a value are counted (the blank spacer rows between PO lines are not).
@@ -308,7 +311,9 @@ def group_rows(rows, hide_comp=False):
     (KNITTED / WOVEN), so e.g. UNISEX JACKET / 6202401091 becomes ONE group whatever the % composition was, but a WOVEN
     and a KNITTED line are NEVER merged.
     Texts are compared ignoring spaces and case, so a content line typed with a stray space still joins its group;
-    the group shows the text of its first PO line."""
+    the group shows the text of its first PO line.
+    Normal mode (UK / SOUTH AFRICA / AUSTRALIA): groups with the same description + HTS code are placed next to each other
+    (order of first appearance), so desc_flags() can print the description + HTS line only for the first of them."""
     groups, seen = OrderedDict(), {}
     for r in rows:
         name, comp = split_desc(r["desc"])
@@ -316,6 +321,11 @@ def group_rows(rows, hide_comp=False):
         nk = (norm(name), norm(r["hts"]), fab) if hide_comp else (norm(name), norm(r["hts"]), norm(comp))
         key = seen.setdefault(nk, (name, r["hts"], fab) if hide_comp else (name, r["hts"], comp))
         groups.setdefault(key, []).append(r)
+    if not hide_comp:
+        order = {}
+        for key in groups:
+            order.setdefault((norm(key[0]), norm(key[1])), len(order))
+        groups = OrderedDict(sorted(groups.items(), key=lambda kv: order[(norm(kv[0][0]), norm(kv[0][1]))]))
     return groups
 
 def comp_flags(groups, hide_comp):
@@ -323,11 +333,26 @@ def comp_flags(groups, hide_comp):
     the next groups carry KNITTED / WOVEN at the end of their description line instead (see desc_suffix)."""
     return [(not hide_comp) or n == 0 for n in range(len(groups))]
 
+def desc_flags(groups, hide_comp):
+    """One bool per group: print its description line '<NAME>  (HTS.CODE : x)'?
+    Other countries (hide_comp): always.
+    UK / SOUTH AFRICA / AUSTRALIA: only the FIRST group of each description + HTS code; the next groups with the
+    same description + HTS code print only their content line + PO lines."""
+    if hide_comp:
+        return [True] * len(groups)
+    seen, out = set(), []
+    for key in groups:
+        k = (norm(key[0]), norm(key[1]))
+        out.append(k not in seen)
+        seen.add(k)
+    return out
+
 def count_lines(rows, hide_comp):
     """Printed lines of an invoice = TOTAL CARTONS row + CUSTOMER NO. row + (description [+ content]) per group
-    + the PO.NO./CUSTOMER PO NO./ART.NO. header + one line per PO line.  Blank spacer rows are not counted."""
+    + the PO.NO./CUSTOMER PO NO./ART.NO. header + one line per PO line.  Blank spacer rows are not counted.
+    A repeated description + HTS line (UK / SOUTH AFRICA / AUSTRALIA) is not printed, so it is not counted."""
     groups = group_rows(rows, hide_comp)
-    return 2 + len(groups) + sum(comp_flags(groups, hide_comp)) + 1 + len(rows)
+    return 2 + sum(desc_flags(groups, hide_comp)) + sum(comp_flags(groups, hide_comp)) + 1 + len(rows)
 
 def line_limit(country):
     return LINE_LIMIT_KEEP if str(country).strip().upper() in KEEP_CONTENT_COUNTRIES else LINE_LIMIT_OTHER
@@ -537,11 +562,12 @@ def build(inv_no, inv, template, pack, date_txt, outdir, wb=None, inv_title=None
     groups = group_rows(inv["rows"], hide_comp)
     n_po, n_grp = len(inv["rows"]), len(groups)
     flags = comp_flags(groups, hide_comp)
+    dflags = desc_flags(groups, hide_comp)         # UK / SOUTH AFRICA / AUSTRALIA: same description + HTS prints its heading only once
     lines, limit = count_lines(inv["rows"], hide_comp), line_limit(country)
     if lines > limit:
         log.warning("%s: %d printed lines, more than the %d allowed for %s (one carton cannot be split)", inv_no, lines, limit, country)
-    # per group: description line + composition line (when flagged); + header once + PO line and spacer row per PO
-    need_last = 24 + n_grp + sum(flags) + 1 + 2 * n_po
+    # per group: description line (when flagged) + composition line (when flagged); + header once + PO line and spacer row per PO
+    need_last = 24 + sum(dflags) + sum(flags) + 1 + 2 * n_po
     inv["lines"] = lines
     shift = need_last - 47                         # template table ends at row 47
 
@@ -581,9 +607,10 @@ def build(inv_no, inv, template, pack, date_txt, outdir, wb=None, inv_title=None
 
     # ---- table
     r = 25; first = True; po_rows = []
-    for (key, items), show_comp in zip(groups.items(), flags):
+    for (key, items), show_comp, show_desc in zip(groups.items(), flags, dflags):
         name, hts = key[0], key[1]
-        apply(ws, r, T["desc"]); ws.cell(r, 3).value = desc_text(name, hts, desc_suffix(items, show_comp)); widen_text_row(ws, r); r += 1
+        if show_desc:                              # a repeated description + HTS line (UK / SOUTH AFRICA / AUSTRALIA) is not printed
+            apply(ws, r, T["desc"]); ws.cell(r, 3).value = desc_text(name, hts, desc_suffix(items, show_comp)); widen_text_row(ws, r); r += 1
         if show_comp:                              # first group (and a fabric change) always shows its content, the others only when not removed
             apply(ws, r, T["comp"]); ws.cell(r, 3).value = split_desc(items[0]["desc"])[1]; widen_text_row(ws, r); r += 1
         if first:
@@ -658,8 +685,9 @@ def build_bkk(wb, base, fam, pack, date_txt, title="INV.BKK", consignees=None, h
         if cus != prev_cus:
             plan.append(("cus", cus)); prev_cus = cus
         grps = group_rows(inv["rows"], hide)
-        for (key, items), show_comp in zip(grps.items(), comp_flags(grps, hide)):
-            plan.append(("desc", (key[0], key[1], desc_suffix(items, show_comp))))
+        for (key, items), show_comp, show_desc in zip(grps.items(), comp_flags(grps, hide), desc_flags(grps, hide)):
+            if show_desc:
+                plan.append(("desc", (key[0], key[1], desc_suffix(items, show_comp))))
             if show_comp:
                 plan.append(("comp", split_desc(items[0]["desc"])[1]))
             if first_group:
@@ -824,11 +852,12 @@ def sheet_names(inv_no, multi_base):
     return "INV" + sfx, "PL" + sfx
 
 def describe(inv_no, inv, pack, hide_comp=None):
-    """Plain-data preview of one invoice (groups and PO lines) for the dashboard."""
+    """Plain-data preview of one invoice (groups and PO lines) for the dashboard.
+    `show_desc` = False for a repeated description + HTS group (UK / SOUTH AFRICA / AUSTRALIA): the dashboard should not print its name again."""
     hide_comp = hide_for(next(iter(inv["country"])), hide_comp)
     groups = group_rows(inv["rows"], hide_comp)
     out = []
-    for (key, items), show_comp in zip(groups.items(), comp_flags(groups, hide_comp)):
+    for (key, items), show_comp, show_desc in zip(groups.items(), comp_flags(groups, hide_comp), desc_flags(groups, hide_comp)):
         name, hts = key[0], key[1]
         comp = split_desc(items[0]["desc"])[1] if show_comp else ""
         lines = []
@@ -836,7 +865,7 @@ def describe(inv_no, inv, pack, hide_comp=None):
             p = pack.get(it["po"], {})
             lines.append(dict(po=it["po"], cus_po=it.get("cpo") or p.get("cus") or "", art=it.get("art") or p.get("art") or "", qty=it["qty"],
                               price=round(it["amt"] / it["qty"], 2), amount=round(it["amt"], 2)))
-        out.append(dict(name=(name + " " + desc_suffix(items, show_comp)).strip(), hts=hts, comp=comp, lines=lines))
+        out.append(dict(name=(name + " " + desc_suffix(items, show_comp)).strip(), hts=hts, comp=comp, lines=lines, show_desc=show_desc))
     return out
 
 class _Collect(logging.Handler):
