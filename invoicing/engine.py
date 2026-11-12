@@ -365,7 +365,9 @@ SET_PCS = 2        # one BABIES SETS (or any single-HTS "SETS") line = 2 pieces
 
 def expand_set(r):
     """SET lines -> invoice lines. Returns (rows, sets).
-    * single HTS ("BABIES SETS")      : qty x SET_PCS pieces, price per piece, amount unchanged
+    * single HTS ("BABIES SETS")      : qty x SET_PCS pieces, price per piece, amount unchanged;
+                                        if amount / pieces is not an exact 2-decimal price the line is split in two:
+                                        (pieces - 1) at the rounded-down price + 1 piece with the remainder
     * two HTS ("UNISEX SETS(T-SHIRT +SHORTS)", HTS a+b) : split into one line per garment (UNISEX T-SHIRT / UNISEX SHORTS),
       qty = number of sets for each, amount split in cents (the parts add up exactly to the original amount)."""
     name, comp = split_desc(r["desc"])
@@ -373,8 +375,18 @@ def expand_set(r):
         return [r], 0
     parts = [x.strip()[:10] for x in str(r["hts"]).split("+")]
     if len(parts) == 1:
-        d = dict(r); d["qty"] = r["qty"] * SET_PCS
-        return [d], r["qty"]
+        pcs = r["qty"] * SET_PCS
+        cents = int(round(r["amt"] * 100))
+        base = cents // pcs
+        rem = cents - base * pcs
+        if rem == 0 or pcs < 2:                      # amount / pcs is an exact 2-decimal price -> one line
+            d = dict(r); d["qty"] = pcs
+            return [d], r["qty"]
+        # amount / pcs has more than 2 decimals (e.g. 36.81 / 6 = 6.135): (pcs - 1) pieces at the rounded-down price,
+        # the LAST piece takes the remainder -> 5 x 6.13 = 30.65  +  1 x 6.16 = 6.16  (= 36.81). Second line has no PO / CUSTOMER PO / ART.NO.
+        a = dict(r); a.update(qty=pcs - 1, amt=base * (pcs - 1) / 100)
+        b = dict(r); b.update(qty=1, amt=(base + rem) / 100, cont=True)
+        return [a, b], r["qty"]
     m = re.search(r"\(([^)]*\+[^)]*)\)", name)
     items = [x.strip() for x in m.group(1).split("+")] if m else []
     if len(items) != len(parts):
@@ -620,8 +632,11 @@ def build(inv_no, inv, template, pack, date_txt, outdir, wb=None, inv_title=None
         for it in items:
             apply(ws, r, T["po"])
             p = pack.get(it["po"], {})
-            ws.cell(r, 3).value = int(it["po"]) if it["po"].isdigit() else it["po"]
-            ws.cell(r, 4).value = it.get("cpo") or p.get("cus"); ws.cell(r, 11).value = it.get("art") or p.get("art")
+            if it.get("cont"):                     # 2nd line of a split BABIES SETS line: PO / CUSTOMER PO / ART.NO. stay blank
+                ws.cell(r, 3).value = ws.cell(r, 4).value = ws.cell(r, 11).value = None
+            else:
+                ws.cell(r, 3).value = int(it["po"]) if it["po"].isdigit() else it["po"]
+                ws.cell(r, 4).value = it.get("cpo") or p.get("cus"); ws.cell(r, 11).value = it.get("art") or p.get("art")
             ws.cell(r, 19).value = it["qty"]
             ws.cell(r, 21).value = round(it["amt"] / it["qty"], 6)
             ws.cell(r, 24).value = f"=S{r}*U{r}"
@@ -753,8 +768,11 @@ def build_bkk(wb, base, fam, pack, date_txt, title="INV.BKK", consignees=None, h
         elif kind == "po":
             it = val; p = pack.get(it["po"], {})
             apply(ws, r, T["po"])
-            ws.cell(r, 3).value = int(it["po"]) if it["po"].isdigit() else it["po"]
-            ws.cell(r, 4).value = it.get("cpo") or p.get("cus"); ws.cell(r, 11).value = it.get("art") or p.get("art")
+            if it.get("cont"):                     # 2nd line of a split BABIES SETS line: PO / CUSTOMER PO / ART.NO. stay blank
+                ws.cell(r, 3).value = ws.cell(r, 4).value = ws.cell(r, 11).value = None
+            else:
+                ws.cell(r, 3).value = int(it["po"]) if it["po"].isdigit() else it["po"]
+                ws.cell(r, 4).value = it.get("cpo") or p.get("cus"); ws.cell(r, 11).value = it.get("art") or p.get("art")
             ws.cell(r, 19).value = it["qty"]
             ws.cell(r, 21).value = round(it["amt"] / it["qty"], 6)
             ws.cell(r, 24).value = f"=S{r}*U{r}"
@@ -863,7 +881,9 @@ def describe(inv_no, inv, pack, hide_comp=None):
         lines = []
         for it in items:
             p = pack.get(it["po"], {})
-            lines.append(dict(po=it["po"], cus_po=it.get("cpo") or p.get("cus") or "", art=it.get("art") or p.get("art") or "", qty=it["qty"],
+            cont = bool(it.get("cont"))
+            lines.append(dict(po="" if cont else it["po"], cus_po="" if cont else (it.get("cpo") or p.get("cus") or ""),
+                              art="" if cont else (it.get("art") or p.get("art") or ""), qty=it["qty"],
                               price=round(it["amt"] / it["qty"], 2), amount=round(it["amt"], 2)))
         out.append(dict(name=(name + " " + desc_suffix(items, show_comp)).strip(), hts=hts, comp=comp, lines=lines, show_desc=show_desc))
     return out
